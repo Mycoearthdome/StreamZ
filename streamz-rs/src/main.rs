@@ -1,4 +1,5 @@
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -128,22 +129,19 @@ fn main() {
             );
         }
         let embeds = compute_speaker_embeddings(&net).unwrap_or_default();
-        let mut correct = 0usize;
         let total = eval_set.len();
-        for (path, class) in eval_set.drain(..) {
-            match load_audio_samples(&path) {
-                Ok(samples) => {
-                    if let Some(pred) =
-                        identify_speaker_cosine(&net, &embeds, &samples, conf_threshold)
-                    {
-                        if pred == class {
-                            correct += 1;
-                        }
-                    }
+        let correct = eval_set
+            .par_iter()
+            .filter(|(path, class)| match load_audio_samples(path) {
+                Ok(samples) => identify_speaker_cosine(&net, &embeds, &samples, conf_threshold)
+                    .map(|pred| pred == *class)
+                    .unwrap_or(false),
+                Err(e) => {
+                    eprintln!("Skipping {}: {}", path, e);
+                    false
                 }
-                Err(e) => eprintln!("Skipping {}: {}", path, e),
-            }
-        }
+            })
+            .count();
         println!(
             "Eval accuracy: {}/{} ({:.2}%)",
             correct,

@@ -21,6 +21,7 @@ rustdct = "0.7"
 mel_filter = "0.1"
 rubato = "0.13"
 realfft = "0.3"
+rayon = "1.7"
 
 [[bin]]
 name = "StreamZ"

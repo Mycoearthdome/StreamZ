@@ -7,6 +7,7 @@ use minimp3::{Decoder, Error as Mp3Error, Frame};
 use ndarray::{s, Array1, Array2, Axis};
 use ndarray_npy::{NpzReader, NpzWriter};
 use rand::Rng;
+use rayon::prelude::*;
 use rustdct::DctPlanner;
 use rustfft::{num_complex::Complex, FftPlanner};
 // use rodio;
@@ -650,26 +651,28 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// training files belonging to that speaker. Missing or unreadable files
 /// are skipped.
 pub fn compute_speaker_embeddings(net: &SimpleNeuralNet) -> Result<Vec<Vec<f32>>, Box<dyn Error>> {
-    let mut embeds = Vec::with_capacity(net.output_size());
-    for files in net.file_lists.iter().take(net.output_size()) {
-        let mut sum = vec![0.0f32; net.embedding_size()];
-        let mut count = 0f32;
-        for path in files {
-            if let Ok(samples) = load_audio_samples(path) {
-                let emb = extract_embedding(net, &samples);
-                for (i, v) in emb.iter().enumerate() {
-                    sum[i] += *v;
+    let embeds: Vec<Vec<f32>> = net.file_lists[..net.output_size()]
+        .par_iter()
+        .map(|files| {
+            let mut sum = vec![0.0f32; net.embedding_size()];
+            let mut count = 0f32;
+            for path in files {
+                if let Ok(samples) = load_audio_samples(path) {
+                    let emb = extract_embedding(net, &samples);
+                    for (i, v) in emb.iter().enumerate() {
+                        sum[i] += *v;
+                    }
+                    count += 1.0;
                 }
-                count += 1.0;
             }
-        }
-        if count > 0.0 {
-            for v in &mut sum {
-                *v /= count;
+            if count > 0.0 {
+                for v in &mut sum {
+                    *v /= count;
+                }
             }
-        }
-        embeds.push(sum);
-    }
+            sum
+        })
+        .collect();
     Ok(embeds)
 }
 
@@ -686,15 +689,12 @@ pub fn identify_speaker_cosine(
         return None;
     }
     let emb = extract_embedding(net, sample);
-    let mut best_idx = 0usize;
-    let mut best_val = f32::NEG_INFINITY;
-    for (idx, ref_vec) in speaker_embeds.iter().enumerate() {
-        let sim = cosine_similarity(ref_vec, &emb);
-        if sim > best_val {
-            best_val = sim;
-            best_idx = idx;
-        }
-    }
+    let (best_idx, best_val) = speaker_embeds
+        .par_iter()
+        .enumerate()
+        .map(|(i, ref_vec)| (i, cosine_similarity(ref_vec, &emb)))
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+        .unwrap();
     if best_val >= threshold {
         Some(best_idx)
     } else {
