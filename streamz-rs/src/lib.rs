@@ -2,6 +2,7 @@
 // use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 // use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use hound;
+use minimp3::{Decoder, Error as Mp3Error, Frame};
 use ndarray::{Array1, Array2, Axis};
 use ndarray_npy::{NpzReader, NpzWriter};
 use rand::Rng;
@@ -64,10 +65,59 @@ pub fn pretrain_network(
 pub fn load_wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
     let mut reader = hound::WavReader::open(path)?;
     if reader.spec().bits_per_sample != 16 {
-        return Err("Only 16-bit WAV files supported".into());
+        return Err("Only 16-bit audio supported".into());
     }
     let samples: Result<Vec<i16>, _> = reader.samples::<i16>().collect();
     Ok(samples?)
+}
+
+/// Load samples from an MP3 file using the `minimp3` decoder. Returns the
+/// decoded samples along with the detected sample rate.
+pub fn load_mp3_samples(path: &str) -> Result<(Vec<i16>, u32), Box<dyn Error>> {
+    let mut decoder = Decoder::new(File::open(path)?);
+    let mut samples = Vec::new();
+    let mut sample_rate = 0u32;
+    loop {
+        match decoder.next_frame() {
+            Ok(Frame { data, sample_rate: sr, .. }) => {
+                if sample_rate == 0 {
+                    sample_rate = sr as u32;
+                }
+                samples.extend_from_slice(&data);
+            }
+            Err(Mp3Error::Eof) => break,
+            Err(e) => return Err(Box::new(e)),
+        }
+    }
+    if sample_rate == 0 {
+        return Err("No frames decoded".into());
+    }
+    Ok((samples, sample_rate))
+}
+
+/// Load audio samples from either a WAV or MP3 file depending on the file
+/// extension.
+pub fn load_audio_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
+    if path.to_ascii_lowercase().ends_with(".mp3") {
+        let (samples, _) = load_mp3_samples(path)?;
+        Ok(samples)
+    } else {
+        load_wav_samples(path)
+    }
+}
+
+fn audio_metadata(path: &str) -> Result<(u32, u16), Box<dyn Error>> {
+    if path.to_ascii_lowercase().ends_with(".mp3") {
+        let mut decoder = Decoder::new(File::open(path)?);
+        if let Ok(Frame { sample_rate, .. }) = decoder.next_frame() {
+            Ok((sample_rate as u32, 16))
+        } else {
+            Err("Unable to decode MP3".into())
+        }
+    } else {
+        let spec = hound::WavReader::open(path)?.spec();
+        Ok((spec.sample_rate, spec.bits_per_sample))
+    }
 }
 
 /// Determine the sample rate and bit depth of the provided WAV files.
@@ -75,14 +125,14 @@ pub fn load_wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
 fn detect_dataset_specs(files: &[(&str, usize)]) -> Result<(u32, u16), Box<dyn Error>> {
     let mut iter = files.iter();
     let first = iter.next().ok_or("No training files provided")?;
-    let spec = hound::WavReader::open(first.0)?.spec();
+    let spec = audio_metadata(first.0)?;
     for (path, _) in iter {
-        let this = hound::WavReader::open(path)?.spec();
-        if this.sample_rate != spec.sample_rate || this.bits_per_sample != spec.bits_per_sample {
-            return Err(format!("Inconsistent WAV specs between {} and {}", first.0, path).into());
+        let this = audio_metadata(path)?;
+        if this != spec {
+            return Err(format!("Inconsistent audio specs between {} and {}", first.0, path).into());
         }
     }
-    Ok((spec.sample_rate, spec.bits_per_sample))
+    Ok(spec)
 }
 
 /// Train the network using a list of `(path, class)` tuples containing WAV files.
@@ -100,11 +150,11 @@ pub fn train_from_files(
     );
     net.set_dataset_specs(sample_rate, bits);
     if bits != 16 {
-        return Err("Only 16-bit WAV files supported".into());
+        return Err("Only 16-bit audio supported".into());
     }
     for _ in 0..epochs {
         for &(path, class) in files {
-            let samples = load_wav_samples(path)?;
+            let samples = load_audio_samples(path)?;
             pretrain_network(net, &samples, class, num_speakers, 1, lr);
         }
     }
@@ -233,4 +283,36 @@ pub fn identify_speaker(net: &SimpleNeuralNet, sample: &[i16]) -> usize {
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
         .map(|(i, _)| i)
         .unwrap_or(0)
+}
+
+/// Predict the speaker ID with a confidence threshold. If the maximum
+/// probability across all windows is below `threshold`, `None` is returned.
+pub fn identify_speaker_with_threshold(
+    net: &SimpleNeuralNet,
+    sample: &[i16],
+    threshold: f32,
+) -> Option<usize> {
+    let mut sums = vec![0.0f32; net.output_size()];
+    let mut count = 0f32;
+    for win in window_samples(sample) {
+        let out = net.forward(&win);
+        for (i, v) in out.iter().enumerate() {
+            sums[i] += *v;
+        }
+        count += 1.0;
+    }
+    if count == 0.0 {
+        return None;
+    }
+    let (best_idx, best_val) = sums
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .unwrap();
+    let confidence = best_val / count;
+    if confidence >= threshold {
+        Some(best_idx)
+    } else {
+        None
+    }
 }
