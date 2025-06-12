@@ -11,6 +11,7 @@ The project now focuses on streaming voice data directly from your microphone. A
 - Rust library `streamz-rs` for live microphone streaming through a small neural network.
 - Uses ALSA for audio output on Linux.
 - Command line program demonstrating live streaming from the microphone.
+- Noise gate threshold adjustable in real time using the Up and Down arrow keys.
 
 ## Requirements
 
@@ -43,6 +44,8 @@ the neural network so the output more closely matches your voice.
 If you do not hear any output, ensure your audio devices are recognized and the
 `libasound2-dev` package is installed on Linux. The neural network now starts
 with random weights so it immediately produces a non-zero signal.
+During streaming you can press the Up and Down arrow keys to raise or lower the
+noise gate threshold. The current level is printed each time you adjust it.
 Audio output uses ALSA on Linux.
 
 ## License

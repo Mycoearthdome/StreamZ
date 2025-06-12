@@ -4,6 +4,7 @@ use rand::Rng;
 use rodio;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
+use crossterm::event::{self, Event, KeyCode};
 use tokio::time::{sleep, Duration};
 
 #[allow(dead_code)]
@@ -202,8 +203,7 @@ pub async fn live_stream(
 }
 
 /// Capture audio from the default microphone, process it with the network and play the result.
-/// This function performs a very naive pitch shift by skipping every other sample
-/// and lowers the amplitude to roughly tone down the signal.
+/// The stream is passed directly to the neural network without altering pitch or tone.
 pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn Error>> {
     let host = select_audio_host();
     println!("Detected audio backend: {}", detect_audio_sink());
@@ -232,12 +232,37 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
     println!("Initial training complete.");
 
     const AMBIENT_SAMPLES: usize = 44100; // about one second at 44.1kHz
-    const THRESHOLD_MULT: f32 = 1.2; // anything above 20% of ambient noise is treated as voice
+    let noise_mult = Arc::new(Mutex::new(1.2f32));
+
+    // Spawn thread to listen for arrow key input and adjust noise gate
+    {
+        let noise_mult_ctrl = noise_mult.clone();
+        std::thread::spawn(move || loop {
+            if event::poll(Duration::from_millis(100)).unwrap() {
+                if let Event::Key(k) = event::read().unwrap() {
+                    match k.code {
+                        KeyCode::Up => {
+                            let mut m = noise_mult_ctrl.lock().unwrap();
+                            *m += 0.1;
+                            println!("Noise gate multiplier: {:.2}", *m);
+                        }
+                        KeyCode::Down => {
+                            let mut m = noise_mult_ctrl.lock().unwrap();
+                            *m = (*m - 0.1).max(0.0);
+                            println!("Noise gate multiplier: {:.2}", *m);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+    }
 
     let stream = match config.sample_format() {
         cpal::SampleFormat::I16 => {
             use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
             let net_clone = net.clone();
+            let noise_mult_cb = noise_mult.clone();
             let ambient_sum = Arc::new(Mutex::new(0f32));
             let ambient_count = Arc::new(AtomicUsize::new(0));
             let has_baseline = Arc::new(AtomicBool::new(false));
@@ -248,8 +273,7 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
             input.build_input_stream(
                 &config.into(),
                 move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                    let mut output = Vec::with_capacity(data.len() / 2);
-                    let mut skip = false;
+                    let mut output = Vec::with_capacity(data.len());
                     if !has_baseline_cb.load(Ordering::Relaxed) {
                         let mut sum = ambient_sum_cb.lock().unwrap();
                         for &sample in data {
@@ -266,19 +290,15 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
 
                     let baseline = *ambient_sum_cb.lock().unwrap();
                     for &sample in data {
-                        skip = !skip;
-                        if skip {
-                            continue;
-                        }
-                        if (sample.abs() as f32) < baseline * THRESHOLD_MULT {
+                        let mult = *noise_mult_cb.lock().unwrap();
+                        if (sample.abs() as f32) < baseline * mult {
                             continue;
                         }
                         let mut net = net_clone.lock().unwrap();
                         let bits = i16_to_bits(sample);
                         let out_bits = net.forward(&bits);
                         net.train(&bits, &bits, 0.001);
-                        let mut out_sample = bits_to_i16(&out_bits);
-                        out_sample /= 2; // tone down
+                        let out_sample = bits_to_i16(&out_bits);
                         output.push(out_sample);
                     }
                     if !output.is_empty() {
@@ -297,6 +317,7 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
         cpal::SampleFormat::F32 => {
             use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
             let net_clone = net.clone();
+            let noise_mult_cb = noise_mult.clone();
             let ambient_sum = Arc::new(Mutex::new(0f32));
             let ambient_count = Arc::new(AtomicUsize::new(0));
             let has_baseline = Arc::new(AtomicBool::new(false));
@@ -307,8 +328,7 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
             input.build_input_stream(
                 &config.into(),
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    let mut output = Vec::with_capacity(data.len() / 2);
-                    let mut skip = false;
+                    let mut output = Vec::with_capacity(data.len());
                     if !has_baseline_cb.load(Ordering::Relaxed) {
                         let mut sum = ambient_sum_cb.lock().unwrap();
                         for &sample in data {
@@ -325,11 +345,8 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
 
                     let baseline = *ambient_sum_cb.lock().unwrap();
                     for &sample in data {
-                        skip = !skip;
-                        if skip {
-                            continue;
-                        }
-                        if sample.abs() < baseline * THRESHOLD_MULT {
+                        let mult = *noise_mult_cb.lock().unwrap();
+                        if sample.abs() < baseline * mult {
                             continue;
                         }
                         let int_sample = (sample * i16::MAX as f32) as i16;
@@ -337,8 +354,7 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
                         let bits = i16_to_bits(int_sample);
                         let out_bits = net.forward(&bits);
                         net.train(&bits, &bits, 0.001);
-                        let mut out_sample = bits_to_i16(&out_bits);
-                        out_sample /= 2; // tone down
+                        let out_sample = bits_to_i16(&out_bits);
                         output.push(out_sample);
                     }
                     if !output.is_empty() {
