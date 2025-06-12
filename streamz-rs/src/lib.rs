@@ -35,21 +35,22 @@ fn detect_audio_sink() -> &'static str {
 /// Convert a 16-bit sample to a vector of bits represented as f32 values (0.0 or 1.0)
 pub fn i16_to_bits(val: i16) -> [f32; 16] {
     let mut bits = [0.0f32; 16];
+    let val_u16 = val as u16;
     for i in 0..16 {
-        bits[i] = if (val >> i) & 1 == 1 { 1.0 } else { 0.0 };
+        bits[i] = if (val_u16 >> i) & 1 == 1 { 1.0 } else { 0.0 };
     }
     bits
 }
 
 /// Convert a vector of bits back into a 16-bit sample
 pub fn bits_to_i16(bits: &[f32]) -> i16 {
-    let mut value: i16 = 0;
+    let mut value: u16 = 0;
     for i in 0..16 {
         if bits[i] > 0.5 {
             value |= 1 << i;
         }
     }
-    value
+    value as i16
 }
 
 /// Remove the estimated ambient noise level from a raw sample.

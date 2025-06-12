@@ -50,6 +50,7 @@ with random weights so it immediately produces a non-zero signal.
 During streaming you can press the Up and Down arrow keys to raise or lower the
 noise gate threshold. The current level is printed each time you adjust it.
 Audio output uses ALSA on Linux.
+Samples are rendered as 16-bit little-endian mono at 44.1 kHz.
 
 ## License
 
