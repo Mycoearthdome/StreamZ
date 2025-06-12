@@ -3,6 +3,8 @@
 // use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use hound;
 use rustfft::{num_complex::Complex, FftPlanner};
+use rustdct::DctPlanner;
+use mel_filter::{mel, NormalizationFactor};
 use minimp3::{Decoder, Error as Mp3Error, Frame};
 use ndarray::{s, Array1, Array2, Axis};
 use ndarray_npy::{NpzReader, NpzWriter};
@@ -12,51 +14,61 @@ use std::error::Error;
 use std::fs::File;
 
 const DEFAULT_SAMPLE_RATE: u32 = 44100;
-pub const WINDOW_SIZE: usize = 256;
-pub const FEATURE_SIZE: usize = WINDOW_SIZE / 2;
+pub const WINDOW_SIZE: usize = 1024;
+const N_MELS: usize = 26;
+pub const FEATURE_SIZE: usize = 13;
 
 /// Convert a raw i16 audio sample to a normalized f32 value in [-1.0, 1.0]
 pub fn i16_to_f32(sample: i16) -> f32 {
     sample as f32 / i16::MAX as f32
 }
 
-/// Split samples into windows and compute FFT magnitude features for each window.
+/// Split samples into windows and compute MFCC features for each window.
 fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
-    use rayon::prelude::*;
-    samples
-        .chunks(WINDOW_SIZE)
-        .filter(|c| c.len() == WINDOW_SIZE)
-        .collect::<Vec<_>>()
-        .par_iter()
-        .map(|c| {
-            // Create planner per window to avoid cross-thread sharing issues
-            let mut planner = FftPlanner::<f32>::new();
-            let fft = planner.plan_fft_forward(WINDOW_SIZE);
-            let mut buffer: Vec<Complex<f32>> = c
-                .iter()
-                .copied()
-                .map(|v| Complex::new(i16_to_f32(v), 0.0))
-                .collect();
-            fft.process(&mut buffer);
-            let mut mags: Vec<f32> = buffer
-                .iter()
-                .take(FEATURE_SIZE)
-                .map(|c| c.norm())
-                .collect();
-            let mean = mags.iter().copied().sum::<f32>() / mags.len() as f32;
-            let var = mags
-                .iter()
-                .map(|&v| {
-                    let d = v - mean;
-                    d * d
-                })
-                .sum::<f32>()
-                / mags.len() as f32;
-            let std = var.sqrt().max(1e-6);
-            mags.iter_mut().for_each(|v| *v = (*v - mean) / std);
-            mags
-        })
-        .collect()
+    let mel_filters = mel::<f32>(
+        DEFAULT_SAMPLE_RATE as usize,
+        WINDOW_SIZE,
+        Some(N_MELS),
+        None,
+        None,
+        false,
+        NormalizationFactor::One,
+    );
+    let mut fft_planner = FftPlanner::<f32>::new();
+    let fft = fft_planner.plan_fft_forward(WINDOW_SIZE);
+    let mut dct_planner = DctPlanner::<f32>::new();
+    let dct = dct_planner.plan_dct2(N_MELS);
+
+    let mut buffer = vec![Complex::<f32>::new(0.0, 0.0); WINDOW_SIZE];
+    let mut features = Vec::new();
+
+    for chunk in samples.chunks(WINDOW_SIZE).filter(|c| c.len() == WINDOW_SIZE) {
+        for (i, &val) in chunk.iter().enumerate() {
+            buffer[i] = Complex::new(i16_to_f32(val), 0.0);
+        }
+        fft.process(&mut buffer);
+        let mags: Vec<f32> = buffer
+            .iter()
+            .take(WINDOW_SIZE / 2 + 1)
+            .map(|c| c.norm_sqr())
+            .collect();
+
+        let mut mel_energies = vec![0.0f32; N_MELS];
+        for (i, filt) in mel_filters.iter().enumerate() {
+            let mut sum = 0.0f32;
+            for (j, &w) in filt.iter().enumerate() {
+                sum += w * mags[j];
+            }
+            mel_energies[i] = (sum.max(1e-12)).ln();
+        }
+
+        let mut coeffs = mel_energies;
+        dct.process_dct2(&mut coeffs);
+        coeffs.truncate(FEATURE_SIZE);
+        features.push(coeffs);
+    }
+
+    features
 }
 
 /// Pre-train the network with a slice of `i16` samples.

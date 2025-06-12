@@ -16,8 +16,9 @@ ndarray-npy = "0.8"
 hound = "3"
 minimp3 = "0.5"
 indicatif = "0.17"
-rayon = "1.7"
 rustfft = "6"
+rustdct = "0.7"
+mel_filter = "0.1"
 
 [[bin]]
 name = "StreamZ"
