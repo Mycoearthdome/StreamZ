@@ -2,22 +2,24 @@
 // use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 // use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use hound;
-use rustfft::{num_complex::Complex, FftPlanner};
-use rustdct::DctPlanner;
 use mel_filter::{mel, NormalizationFactor};
 use minimp3::{Decoder, Error as Mp3Error, Frame};
 use ndarray::{s, Array1, Array2, Axis};
 use ndarray_npy::{NpzReader, NpzWriter};
 use rand::Rng;
+use rustdct::DctPlanner;
+use rustfft::{num_complex::Complex, FftPlanner};
 // use rodio;
+use rubato::{FftFixedInOut, Resampler};
 use std::error::Error;
 use std::fs::File;
-use rubato::{FftFixedInOut, Resampler};
 
 const DEFAULT_SAMPLE_RATE: u32 = 44100;
 pub const WINDOW_SIZE: usize = 1024;
 const N_MELS: usize = 26;
 pub const FEATURE_SIZE: usize = 13;
+/// Default dropout probability applied during training.
+pub const DEFAULT_DROPOUT: f32 = 0.2;
 
 /// Apply simple data augmentation to raw i16 samples.
 /// Adds small random gain and noise to each sample.
@@ -28,10 +30,23 @@ pub fn augment(samples: &[i16]) -> Vec<i16> {
         .map(|&s| {
             let noise: f32 = rng.gen_range(-0.005..0.005);
             let gain: f32 = rng.gen_range(0.9..1.1);
-            (s as f32 * gain + noise * i16::MAX as f32)
-                .clamp(i16::MIN as f32, i16::MAX as f32) as i16
+            (s as f32 * gain + noise * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32)
+                as i16
         })
         .collect()
+}
+
+/// Apply dropout to a slice of features in-place.
+fn apply_dropout(features: &mut [f32], prob: f32) {
+    if prob <= 0.0 {
+        return;
+    }
+    let mut rng = rand::thread_rng();
+    for v in features.iter_mut() {
+        if rng.gen::<f32>() < prob {
+            *v = 0.0;
+        }
+    }
 }
 
 /// Convert a raw i16 audio sample to a normalized f32 value in [-1.0, 1.0]
@@ -45,10 +60,7 @@ pub fn resample_to_44100(samples: &[i16], from_rate: u32) -> Result<Vec<i16>, Bo
         return Ok(samples.to_vec());
     }
     let chunk_size = 1024;
-    let input: Vec<Vec<f32>> = vec![samples
-        .iter()
-        .map(|&s| i16_to_f32(s))
-        .collect()];
+    let input: Vec<Vec<f32>> = vec![samples.iter().map(|&s| i16_to_f32(s)).collect()];
     let mut resampler = FftFixedInOut::<f32>::new(
         from_rate as usize,
         DEFAULT_SAMPLE_RATE as usize,
@@ -82,7 +94,10 @@ fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
     let mut buffer = vec![Complex::<f32>::new(0.0, 0.0); WINDOW_SIZE];
     let mut features = Vec::new();
 
-    for chunk in samples.chunks(WINDOW_SIZE).filter(|c| c.len() == WINDOW_SIZE) {
+    for chunk in samples
+        .chunks(WINDOW_SIZE)
+        .filter(|c| c.len() == WINDOW_SIZE)
+    {
         for (i, &val) in chunk.iter().enumerate() {
             buffer[i] = Complex::new(i16_to_f32(val), 0.0);
         }
@@ -119,6 +134,7 @@ pub fn pretrain_network(
     num_classes: usize,
     epochs: usize,
     lr: f32,
+    dropout: f32,
 ) {
     let mut target = vec![0.0f32; num_classes];
     if target_class < num_classes {
@@ -128,7 +144,9 @@ pub fn pretrain_network(
     let windows = window_samples(&aug_samples);
     for _ in 0..epochs {
         for win in &windows {
-            net.train(win, &target, lr);
+            let mut feats = win.clone();
+            apply_dropout(&mut feats, dropout);
+            net.train(&feats, &target, lr);
         }
     }
 }
@@ -208,6 +226,7 @@ pub fn train_from_files(
     num_speakers: usize,
     epochs: usize,
     lr: f32,
+    dropout: f32,
 ) -> Result<(), Box<dyn Error>> {
     use indicatif::{ProgressBar, ProgressStyle};
     println!("Training on {} files individually", total_files);
@@ -235,7 +254,7 @@ pub fn train_from_files(
         for _ in 0..epochs {
             match load_audio_samples(path) {
                 Ok(samples) => {
-                    pretrain_network(net, &samples, class, num_speakers, 1, lr);
+                    pretrain_network(net, &samples, class, num_speakers, 1, lr, dropout);
                     net.record_training_file(class, path);
                 }
                 Err(e) => {
@@ -559,11 +578,7 @@ pub fn identify_speaker_with_threshold(
 /// threshold. Each window is classified individually and the speaker with the
 /// highest probability is counted if that probability exceeds `threshold`.
 /// Speakers are returned in descending order of occurrences across windows.
-pub fn identify_speaker_list(
-    net: &SimpleNeuralNet,
-    sample: &[i16],
-    threshold: f32,
-) -> Vec<usize> {
+pub fn identify_speaker_list(net: &SimpleNeuralNet, sample: &[i16], threshold: f32) -> Vec<usize> {
     let mut counts = vec![0usize; net.output_size()];
     for win in window_samples(sample) {
         let out = net.forward(&win);

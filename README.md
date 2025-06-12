@@ -45,6 +45,14 @@ Run the classifier:
 
 During the run every file listed in `train_files.txt` is processed.  If a line lacks a speaker label the program will attempt to match it against previously learned voices and will append the chosen label to the file.  Newly discovered speakers are added to the model automatically.  The updated model and list of files are written back to disk at the end of the run.
 
+## Training Tips
+
+- The default training loop now runs for 15 epochs per file with a small
+  dropout rate of 20% to reduce overfitting.
+- You can adjust the confidence threshold for matching existing speakers using
+  `--threshold <value>`. Lower values (e.g. `0.5`) make the program more willing
+  to reuse a known speaker label.
+
 ## License
 
 This project is released under the Creative Commons Zero v1.0 Universal license.  See [LICENSE](LICENSE) for details.
