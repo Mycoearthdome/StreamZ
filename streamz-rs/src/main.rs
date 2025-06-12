@@ -1,7 +1,6 @@
 use std::io::{self, Write};
 use streamz_rs::{
-    identify_speaker, load_wav_samples, train_from_files, SimpleNeuralNet,
-    WINDOW_SIZE,
+    identify_speaker, load_wav_samples, train_from_files, SimpleNeuralNet, WINDOW_SIZE,
 };
 
 const TRAIN_FILES: [(&str, usize); 6] = [
