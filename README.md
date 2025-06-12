@@ -8,7 +8,7 @@ StreamZ is a small Rust application that trains and executes a simple neural net
 - Feed‑forward neural network (`SimpleNeuralNet`) with one hidden layer and softmax output.
 - Training files and their assigned class numbers are stored in `train_files.txt` so that additional runs continue learning from where you left off.
 - Model weights, sample rate and other metadata are saved in `model.npz` for reuse between sessions.
-- Unlabelled files are compared against existing speakers using a confidence threshold (default `0.8`); low confidence will create a new speaker entry automatically. The threshold can be overridden with `--threshold <value>` when running the program.
+- Unlabelled files are compared against existing speakers using a confidence threshold (default `1.0`); low confidence will create a new speaker entry automatically. The threshold can be overridden with `--threshold <value>` when running the program.
 - Works with recordings that use different sample rates and can grow to
   handle any number of speakers over time.
 - A helper function `identify_speaker_list` returns all detected speakers in
