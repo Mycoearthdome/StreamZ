@@ -10,12 +10,10 @@ use tokio::time::{sleep, Duration};
 fn select_audio_host() -> cpal::Host {
     #[cfg(target_os = "linux")]
     {
-        use cpal::{available_hosts, host_from_id, HostId};
-        if available_hosts().contains(&HostId::Alsa) {
-            host_from_id(HostId::Alsa).unwrap_or_else(|_| cpal::default_host())
-        } else {
-            cpal::default_host()
-        }
+        use cpal::{host_from_id, HostId};
+        // Use ALSA directly on Linux and fall back to the default host if
+        // it cannot be created.
+        host_from_id(HostId::Alsa).unwrap_or_else(|_| cpal::default_host())
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -23,14 +21,10 @@ fn select_audio_host() -> cpal::Host {
     }
 }
 
-/// Detect whether PulseAudio is available on the system.
-/// This is a best-effort check based on the presence of the `pactl` command.
+/// Return the name of the audio backend in use.
+/// On Linux this library always uses ALSA.
 fn detect_audio_sink() -> &'static str {
-    if std::process::Command::new("pactl").output().is_ok() {
-        "PulseAudio"
-    } else {
-        "ALSA"
-    }
+    "ALSA"
 }
 
 
