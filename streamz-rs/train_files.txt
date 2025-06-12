@@ -2,3 +2,4 @@ examples/training_data/common_voice_fr_41922955.mp3
 examples/training_data/common_voice_fr_42346439.mp3
 examples/training_data/common_voice_fr_42541248.mp3
 examples/training_data/common_voice_fr_42483609.mp3
+examples/training_data/common_voice_fr_41911269.mp3
