@@ -18,6 +18,21 @@ pub const WINDOW_SIZE: usize = 1024;
 const N_MELS: usize = 26;
 pub const FEATURE_SIZE: usize = 13;
 
+/// Apply simple data augmentation to raw i16 samples.
+/// Adds small random gain and noise to each sample.
+pub fn augment(samples: &[i16]) -> Vec<i16> {
+    let mut rng = rand::thread_rng();
+    samples
+        .iter()
+        .map(|&s| {
+            let noise: f32 = rng.gen_range(-0.005..0.005);
+            let gain: f32 = rng.gen_range(0.9..1.1);
+            (s as f32 * gain + noise * i16::MAX as f32)
+                .clamp(i16::MIN as f32, i16::MAX as f32) as i16
+        })
+        .collect()
+}
+
 /// Convert a raw i16 audio sample to a normalized f32 value in [-1.0, 1.0]
 pub fn i16_to_f32(sample: i16) -> f32 {
     sample as f32 / i16::MAX as f32
@@ -84,7 +99,8 @@ pub fn pretrain_network(
     if target_class < num_classes {
         target[target_class] = 1.0;
     }
-    let windows = window_samples(samples);
+    let aug_samples = augment(samples);
+    let windows = window_samples(&aug_samples);
     for _ in 0..epochs {
         for win in &windows {
             net.train(win, &target, lr);
@@ -97,6 +113,9 @@ pub fn load_wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
     let mut reader = hound::WavReader::open(path)?;
     if reader.spec().bits_per_sample != 16 {
         return Err("Only 16-bit audio supported".into());
+    }
+    if reader.spec().sample_rate != DEFAULT_SAMPLE_RATE {
+        return Err("Unsupported sample rate".into());
     }
     let samples: Result<Vec<i16>, _> = reader.samples::<i16>().collect();
     Ok(samples?)
@@ -127,6 +146,9 @@ pub fn load_mp3_samples(path: &str) -> Result<(Vec<i16>, u32), Box<dyn Error>> {
     if sample_rate == 0 {
         return Err("No frames decoded".into());
     }
+    if sample_rate != DEFAULT_SAMPLE_RATE {
+        return Err("Unsupported sample rate".into());
+    }
     Ok((samples, sample_rate))
 }
 
@@ -147,13 +169,21 @@ pub fn audio_metadata(path: &str) -> Result<(u32, u16), Box<dyn Error>> {
     if path.to_ascii_lowercase().ends_with(".mp3") {
         let mut decoder = Decoder::new(File::open(path)?);
         if let Ok(Frame { sample_rate, .. }) = decoder.next_frame() {
-            Ok((sample_rate as u32, 16))
+            if sample_rate as u32 != DEFAULT_SAMPLE_RATE {
+                Err("Unsupported sample rate".into())
+            } else {
+                Ok((sample_rate as u32, 16))
+            }
         } else {
             Err("Unable to decode MP3".into())
         }
     } else {
         let spec = hound::WavReader::open(path)?.spec();
-        Ok((spec.sample_rate, spec.bits_per_sample))
+        if spec.sample_rate != DEFAULT_SAMPLE_RATE {
+            Err("Unsupported sample rate".into())
+        } else {
+            Ok((spec.sample_rate, spec.bits_per_sample))
+        }
     }
 }
 
