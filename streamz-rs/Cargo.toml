@@ -1,0 +1,8 @@
+[package]
+name = "streamz-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hound = "3.4"
+ndarray = "0.15"
