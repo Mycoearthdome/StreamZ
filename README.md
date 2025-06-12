@@ -15,6 +15,12 @@ The project now focuses on streaming voice data directly from your microphone. A
 ## Requirements
 
 - Rust 1.70+ and Cargo.
+- On Linux, the `libasound2-dev` package is required to build the ALSA backend
+  used by the `rodio` and `cpal` crates. Install it via `apt`:
+
+```bash
+sudo apt-get install libasound2-dev
+```
 
 Build the example with:
 
