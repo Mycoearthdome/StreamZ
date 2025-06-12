@@ -1,4 +1,8 @@
 use std::io::{self, Write};
+use std::path::Path;
+use std::time::Duration;
+use crossterm::event::{self, Event, KeyCode};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use streamz_rs::{
     identify_speaker, load_wav_samples, train_from_files, SimpleNeuralNet, WINDOW_SIZE,
 };
@@ -11,6 +15,8 @@ const TRAIN_FILES: [(&str, usize); 6] = [
     ("examples/training_data/arctic_b0356.wav", 1),
     ("examples/training_data/arctic_b0417.wav", 1),
 ];
+
+const MODEL_PATH: &str = "model.npz";
 
 /// Determine the number of speakers based on the TRAIN_FILES array.
 /// The highest class index is assumed to be the last speaker and
@@ -26,14 +32,37 @@ fn count_speakers() -> usize {
 
 fn main() {
     let num_speakers = count_speakers();
-    let mut net = SimpleNeuralNet::new(WINDOW_SIZE, 32, num_speakers);
-    // Train longer and with a slightly higher learning rate so the tiny
-    // dataset actually influences the model weights.
-    if let Err(e) = train_from_files(&mut net, &TRAIN_FILES, num_speakers, 30, 0.01) {
-        eprintln!("Training failed: {}", e);
-        return;
-    }
-    println!("Training complete. Choose a speaker file to test:");
+    let mut net = if Path::new(MODEL_PATH).exists() {
+        match SimpleNeuralNet::load(MODEL_PATH) {
+            Ok(n) => {
+                println!("Loaded saved model from {}", MODEL_PATH);
+                n
+            }
+            Err(e) => {
+                eprintln!("Failed to load model: {}. Retraining...", e);
+                let mut n = SimpleNeuralNet::new(WINDOW_SIZE, 32, num_speakers);
+                if let Err(e) = train_from_files(&mut n, &TRAIN_FILES, num_speakers, 30, 0.01) {
+                    eprintln!("Training failed: {}", e);
+                    return;
+                }
+                if let Err(e) = n.save(MODEL_PATH) {
+                    eprintln!("Failed to save model: {}", e);
+                }
+                n
+            }
+        }
+    } else {
+        let mut n = SimpleNeuralNet::new(WINDOW_SIZE, 32, num_speakers);
+        if let Err(e) = train_from_files(&mut n, &TRAIN_FILES, num_speakers, 30, 0.01) {
+            eprintln!("Training failed: {}", e);
+            return;
+        }
+        if let Err(e) = n.save(MODEL_PATH) {
+            eprintln!("Failed to save model: {}", e);
+        }
+        n
+    };
+    println!("Model ready. Choose a speaker file to test:");
 
     // Pick one example file per speaker for testing prompts
     let mut sample_for_speaker: Vec<Option<&str>> = vec![None; num_speakers];
@@ -71,6 +100,19 @@ fn main() {
         Ok(samples) => {
             let speaker = identify_speaker(&net, &samples);
             println!("Model prediction: Speaker {}", speaker + 1);
+            println!("Press ESC to exit...");
+            if enable_raw_mode().is_ok() {
+                loop {
+                    if event::poll(Duration::from_millis(500)).unwrap_or(false) {
+                        if let Event::Key(key) = event::read().unwrap() {
+                            if key.code == KeyCode::Esc {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let _ = disable_raw_mode();
+            }
         }
         Err(e) => eprintln!("Failed to load test file: {}", e),
     }

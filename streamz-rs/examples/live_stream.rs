@@ -1,9 +1,8 @@
-use std::sync::{Arc, Mutex};
-use streamz_rs::{live_mic_stream, SimpleNeuralNet, WINDOW_SIZE};
+// The live microphone streaming example is disabled because the audio
+// backend dependencies are not included.
+use streamz_rs::{SimpleNeuralNet, WINDOW_SIZE};
 
 fn main() {
-    let net = Arc::new(Mutex::new(SimpleNeuralNet::new(WINDOW_SIZE, 32, 1)));
-    if let Err(e) = live_mic_stream(net, 1) {
-        eprintln!("Error: {}", e);
-    }
+    let _net = SimpleNeuralNet::new(WINDOW_SIZE, 32, 1);
+    println!("live_mic_stream example is not available in this build.");
 }
