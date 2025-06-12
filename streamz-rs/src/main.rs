@@ -202,12 +202,21 @@ fn main() {
             .unwrap(),
     );
 
+    let preload: Vec<_> = train_files
+        .par_iter()
+        .map(|(path, class)| {
+            load_audio_samples(path)
+                .map(|samples| (path.clone(), *class, samples))
+                .map_err(|e| e.to_string())
+        })
+        .collect();
+
     let mut speaker_embeds = compute_speaker_embeddings(&net).unwrap_or_default();
 
-    for (path, class) in train_files.iter_mut() {
+    for ((path, class), result) in train_files.iter_mut().zip(preload) {
         pb.set_message(path.to_string());
-        match load_audio_samples(path) {
-            Ok(samples) => {
+        match result {
+            Ok((_, _, samples)) => {
                 if let Some(label) = *class {
                     let sz = net.output_size();
                     pretrain_network(
