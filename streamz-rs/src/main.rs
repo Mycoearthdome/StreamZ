@@ -2,12 +2,14 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use streamz_rs::{
-    identify_speaker, load_wav_samples, train_from_files, SimpleNeuralNet, WINDOW_SIZE,
+    identify_speaker_with_threshold, load_audio_samples, train_from_files,
+    SimpleNeuralNet, WINDOW_SIZE,
 };
 
 
 const MODEL_PATH: &str = "model.npz";
 const TRAIN_FILE_LIST: &str = "train_files.txt";
+const CONF_THRESHOLD: f32 = 0.6;
 
 fn load_train_files(path: &str) -> Vec<(String, usize)> {
     if let Ok(content) = fs::read_to_string(path) {
@@ -47,9 +49,10 @@ fn relabel_files(
     files: &mut [(String, usize)],
 ) -> Result<(), Box<dyn std::error::Error>> {
     for (path, class) in files.iter_mut() {
-        let samples = load_wav_samples(path)?;
-        let pred = identify_speaker(net, &samples);
-        *class = pred;
+        let samples = load_audio_samples(path)?;
+        if let Some(pred) = identify_speaker_with_threshold(net, &samples, CONF_THRESHOLD) {
+            *class = pred;
+        }
     }
     Ok(())
 }

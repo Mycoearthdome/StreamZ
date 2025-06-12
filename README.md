@@ -5,7 +5,7 @@ StreamZ is a lightweight prototype for handling real time voice data and process
 ## What the Program Achieves
 
 StreamZ demonstrates a very small audio classification pipeline built entirely in
-Rust. The application shows how short WAV recordings can be used to train a
+Rust. The application shows how short WAV or MP3 recordings can be used to train a
 feed‑forward neural network and how that network can then recognise a speaker in
 new audio samples. It packages the recorded training data and the resulting
 model weights so that the classifier can be reused in subsequent runs. While the
@@ -30,6 +30,8 @@ analysis or future work on speech reconstruction.
 - Training samples can optionally be saved as `.wav` files for later use.
 - Model weights are stored in an `npz` file so the network can be reused between runs.
 - Noise gate threshold adjustable in real time using the Up and Down arrow keys.
+- MP3 input files are automatically decoded to WAV samples.
+- Unknown speakers can be detected using a confidence threshold.
 
 ## Requirements
 
