@@ -13,6 +13,7 @@ use tokio::time::{sleep, Duration};
 
 const SAMPLE_RATE: u32 = 44100;
 const CHANNELS: u16 = 1;
+pub const WINDOW_SIZE: usize = 256;
 
 #[allow(dead_code)]
 fn select_audio_host() -> cpal::Host {
@@ -101,6 +102,16 @@ pub fn f32_to_i16(sample: f32) -> i16 {
     (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
 }
 
+/// Split samples into consecutive windows of `WINDOW_SIZE` normalized floats
+fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
+    samples
+        .chunks(WINDOW_SIZE)
+        .filter(|c| c.len() == WINDOW_SIZE)
+        .map(|c| c.iter().map(|&s| i16_to_f32(s)).collect())
+        .collect()
+}
+
+
 /// Remove the estimated ambient noise level from a raw sample.
 fn subtract_baseline(sample: i16, baseline: f32) -> f32 {
     let sign = if sample >= 0 { 1.0 } else { -1.0 };
@@ -163,10 +174,10 @@ pub fn pretrain_network(
     if target_class < num_classes {
         target[target_class] = 1.0;
     }
+    let windows = window_samples(samples);
     for _ in 0..epochs {
-        for &sample in samples {
-            let val = i16_to_f32(sample);
-            net.train(&[val], &target, lr);
+        for win in &windows {
+            net.train(win, &target, lr);
         }
     }
 }
@@ -457,8 +468,8 @@ impl SimpleNeuralNet {
 /// Predict the speaker ID from a sample slice using the network
 pub fn identify_speaker(net: &SimpleNeuralNet, sample: &[i16]) -> usize {
     let mut sums = vec![0.0f32; net.output_size()];
-    for &s in sample {
-        let out = net.forward(&[i16_to_f32(s)]);
+    for win in window_samples(sample) {
+        let out = net.forward(&win);
         for (i, v) in out.iter().enumerate() {
             sums[i] += *v;
         }

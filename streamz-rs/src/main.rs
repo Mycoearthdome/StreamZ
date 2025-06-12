@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 use streamz_rs::{
     identify_speaker, load_wav_samples, train_from_files, SimpleNeuralNet,
+    WINDOW_SIZE,
 };
 
 const TRAIN_FILES: [(&str, usize); 6] = [
@@ -15,7 +16,7 @@ const TRAIN_FILES: [(&str, usize); 6] = [
 const NUM_SPEAKERS: usize = 2;
 
 fn main() {
-    let mut net = SimpleNeuralNet::new(1, 8, NUM_SPEAKERS);
+    let mut net = SimpleNeuralNet::new(WINDOW_SIZE, 32, NUM_SPEAKERS);
     if let Err(e) = train_from_files(&mut net, &TRAIN_FILES, NUM_SPEAKERS, 1, 0.001) {
         eprintln!("Training failed: {}", e);
         return;
