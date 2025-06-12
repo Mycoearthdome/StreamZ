@@ -158,4 +158,6 @@ fn main() {
             None => println!("{} -> speaker unknown", p),
         }
     }
+    let processed_speakers = count_speakers(&train_files);
+    println!("Processed {} speakers in this batch.", processed_speakers);
 }
