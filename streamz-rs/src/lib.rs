@@ -79,7 +79,11 @@ pub fn load_mp3_samples(path: &str) -> Result<(Vec<i16>, u32), Box<dyn Error>> {
     let mut sample_rate = 0u32;
     loop {
         match decoder.next_frame() {
-            Ok(Frame { data, sample_rate: sr, .. }) => {
+            Ok(Frame {
+                data,
+                sample_rate: sr,
+                ..
+            }) => {
                 if sample_rate == 0 {
                     sample_rate = sr as u32;
                 }
@@ -122,21 +126,6 @@ pub fn audio_metadata(path: &str) -> Result<(u32, u16), Box<dyn Error>> {
     }
 }
 
-/// Determine the sample rate and bit depth of the provided WAV files.
-/// Returns an error if the files have mismatched specs.
-fn detect_dataset_specs(files: &[(&str, usize)]) -> Result<(u32, u16), Box<dyn Error>> {
-    let mut iter = files.iter();
-    let first = iter.next().ok_or("No training files provided")?;
-    let spec = audio_metadata(first.0)?;
-    for (path, _) in iter {
-        let this = audio_metadata(path)?;
-        if this != spec {
-            return Err(format!("Inconsistent audio specs between {} and {}", first.0, path).into());
-        }
-    }
-    Ok(spec)
-}
-
 /// Train the network using a list of `(path, class)` tuples containing WAV files.
 pub fn train_from_files(
     net: &mut SimpleNeuralNet,
@@ -145,17 +134,18 @@ pub fn train_from_files(
     epochs: usize,
     lr: f32,
 ) -> Result<(), Box<dyn Error>> {
-    let (sample_rate, bits) = detect_dataset_specs(files)?;
-    println!(
-        "Detected training data: {} Hz, {} bits per sample",
-        sample_rate, bits
-    );
-    net.set_dataset_specs(sample_rate, bits);
-    if bits != 16 {
-        return Err("Only 16-bit audio supported".into());
-    }
-    for _ in 0..epochs {
-        for &(path, class) in files {
+    println!("Training on {} files individually", files.len());
+    for &(path, class) in files {
+        let (sample_rate, bits) = audio_metadata(path)?;
+        println!(
+            "Training on {} -> {} Hz, {} bits per sample",
+            path, sample_rate, bits
+        );
+        net.set_dataset_specs(sample_rate, bits);
+        if bits != 16 {
+            return Err("Only 16-bit audio supported".into());
+        }
+        for _ in 0..epochs {
             let samples = load_audio_samples(path)?;
             pretrain_network(net, &samples, class, num_speakers, 1, lr);
         }
