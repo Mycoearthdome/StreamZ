@@ -3,8 +3,8 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use streamz_rs::{
-    identify_speaker_with_threshold, load_audio_samples, pretrain_network, train_from_files,
-    SimpleNeuralNet, FEATURE_SIZE,
+    identify_speaker, identify_speaker_with_threshold, load_audio_samples, pretrain_network,
+    train_from_files, SimpleNeuralNet, FEATURE_SIZE,
 };
 use std::env;
 
@@ -70,6 +70,7 @@ fn count_speakers(files: &[(String, Option<usize>)]) -> usize {
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut conf_threshold = DEFAULT_CONF_THRESHOLD;
+    let eval_mode = args.iter().any(|a| a == "--eval");
     if let Some(idx) = args.iter().position(|a| a == "--threshold") {
         if let Some(val) = args.get(idx + 1) {
             match val.parse::<f32>() {
@@ -87,6 +88,51 @@ fn main() {
         return;
     }
 
+    if eval_mode {
+        use rand::seq::SliceRandom;
+        let mut rng = rand::thread_rng();
+        let mut labelled: Vec<(String, usize)> = train_files
+            .iter()
+            .filter_map(|(p, c)| c.map(|cls| (p.clone(), cls)))
+            .collect();
+        if labelled.is_empty() {
+            eprintln!("No labelled data available for evaluation");
+            return;
+        }
+        labelled.shuffle(&mut rng);
+        let split = (labelled.len() as f32 * 0.2).ceil() as usize;
+        let mut eval_set = labelled.split_off(labelled.len().saturating_sub(split));
+        let train_refs: Vec<(&str, usize)> = labelled
+            .iter()
+            .map(|(p, c)| (p.as_str(), *c))
+            .collect();
+        let mut net = SimpleNeuralNet::new(FEATURE_SIZE, 128, count_speakers(&train_files).max(1));
+        if !train_refs.is_empty() {
+            let out_sz = net.output_size();
+            let _ = train_from_files(&mut net, &train_refs, train_refs.len(), out_sz, 30, 0.01);
+        }
+        let mut correct = 0usize;
+        let total = eval_set.len();
+        for (path, class) in eval_set.drain(..) {
+            match load_audio_samples(&path) {
+                Ok(samples) => {
+                    let pred = identify_speaker(&net, &samples);
+                    if pred == class {
+                        correct += 1;
+                    }
+                }
+                Err(e) => eprintln!("Skipping {}: {}", path, e),
+            }
+        }
+        println!(
+            "Eval accuracy: {}/{} ({:.2}%)",
+            correct,
+            total,
+            correct as f32 * 100.0 / total as f32
+        );
+        return;
+    }
+
     let mut num_speakers = count_speakers(&train_files);
     let mut net = if Path::new(MODEL_PATH).exists() {
         match SimpleNeuralNet::load(MODEL_PATH) {
@@ -96,7 +142,7 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("Failed to load model: {}", e);
-                SimpleNeuralNet::new(FEATURE_SIZE, 32, num_speakers.max(1))
+                SimpleNeuralNet::new(FEATURE_SIZE, 128, num_speakers.max(1))
             }
         }
     } else {
@@ -104,7 +150,7 @@ fn main() {
             num_speakers = 1;
             train_files[0].1 = Some(0);
         }
-        let mut n = SimpleNeuralNet::new(FEATURE_SIZE, 32, num_speakers.max(1));
+        let mut n = SimpleNeuralNet::new(FEATURE_SIZE, 128, num_speakers.max(1));
         let train_refs: Vec<(&str, usize)> = train_files
             .iter()
             .filter_map(|(p, c)| c.map(|cls| (p.as_str(), cls)))
