@@ -206,13 +206,13 @@ impl SimpleNeuralNet {
     pub fn load(path: &str) -> Result<Self, Box<dyn Error>> {
         let file = File::open(path)?;
         let mut npz = NpzReader::new(file)?;
-        let sample_rate: ndarray::Array1<i64> = npz.by_name("sample_rate.npy")?;
-        let bits: ndarray::Array1<i64> = npz.by_name("bits.npy")?;
+        let sample_rate: ndarray::Array1<i64> = npz.by_name("sample_rate")?;
+        let bits: ndarray::Array1<i64> = npz.by_name("bits")?;
         Ok(Self {
-            w1: npz.by_name("w1.npy")?,
-            b1: npz.by_name("b1.npy")?,
-            w2: npz.by_name("w2.npy")?,
-            b2: npz.by_name("b2.npy")?,
+            w1: npz.by_name("w1")?,
+            b1: npz.by_name("b1")?,
+            w2: npz.by_name("w2")?,
+            b2: npz.by_name("b2")?,
             sample_rate: sample_rate[0] as u32,
             bits: bits[0] as u16,
         })

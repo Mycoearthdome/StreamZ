@@ -32,7 +32,7 @@ fn count_speakers() -> usize {
 
 fn main() {
     let num_speakers = count_speakers();
-    let mut net = if Path::new(MODEL_PATH).exists() {
+    let net = if Path::new(MODEL_PATH).exists() {
         match SimpleNeuralNet::load(MODEL_PATH) {
             Ok(n) => {
                 println!("Loaded saved model from {}", MODEL_PATH);
