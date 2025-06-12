@@ -2,6 +2,15 @@
 
 StreamZ is a lightweight prototype for handling real time voice data and processing it with a neural network.  The current version focuses on speaker identification rather than audio reconstruction.
 
+## Project Goal
+
+The aim of this repository is to experiment with real‑time voice streaming and
+neural‑network based speaker recognition.  By building a small Rust
+application around a simple network, StreamZ demonstrates how microphone input
+can be captured, converted into training samples and then classified.  The code
+serves as a starting point for more advanced experiments in real‑time audio
+analysis or future work on speech reconstruction.
+
 ## Features
 
 - `MIMOStream` simulator generating bit vectors.
