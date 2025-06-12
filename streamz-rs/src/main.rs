@@ -6,13 +6,14 @@ use streamz_rs::{
     identify_speaker_with_threshold, load_audio_samples, pretrain_network, train_from_files,
     SimpleNeuralNet, WINDOW_SIZE,
 };
+use std::env;
 
 const MODEL_PATH: &str = "model.npz";
 const TRAIN_FILE_LIST: &str = "train_files.txt";
 /// Confidence threshold for assigning a sample to an existing speaker.
 /// Higher values make the program less eager to reuse a known speaker
 /// and instead create a new one when confidence is low.
-const CONF_THRESHOLD: f32 = 1.0;
+const DEFAULT_CONF_THRESHOLD: f32 = 0.8;
 
 fn load_train_files(path: &str) -> Vec<(String, Option<usize>)> {
     if let Ok(content) = fs::read_to_string(path) {
@@ -67,6 +68,19 @@ fn count_speakers(files: &[(String, Option<usize>)]) -> usize {
 }
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    let mut conf_threshold = DEFAULT_CONF_THRESHOLD;
+    if let Some(idx) = args.iter().position(|a| a == "--threshold") {
+        if let Some(val) = args.get(idx + 1) {
+            match val.parse::<f32>() {
+                Ok(v) => conf_threshold = v,
+                Err(_) => eprintln!("Invalid value for --threshold '{}', using default {}", val, DEFAULT_CONF_THRESHOLD),
+            }
+        } else {
+            eprintln!("Missing value for --threshold, using default {}", DEFAULT_CONF_THRESHOLD);
+        }
+    }
+
     let mut train_files = load_train_files(TRAIN_FILE_LIST);
     if train_files.is_empty() {
         eprintln!("{} is empty", TRAIN_FILE_LIST);
@@ -122,7 +136,7 @@ fn main() {
                     pretrain_network(&mut net, &samples, label, sz, 30, 0.01);
                     net.record_training_file(label, path);
                 } else if let Some(pred) =
-                    identify_speaker_with_threshold(&net, &samples, CONF_THRESHOLD)
+                    identify_speaker_with_threshold(&net, &samples, conf_threshold)
                 {
                     *class = Some(pred);
                     let sz = net.output_size();
