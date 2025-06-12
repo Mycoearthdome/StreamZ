@@ -477,3 +477,35 @@ pub fn identify_speaker_with_threshold(
         None
     }
 }
+
+/// Identify all speakers present in a sample using a per-window confidence
+/// threshold. Each window is classified individually and the speaker with the
+/// highest probability is counted if that probability exceeds `threshold`.
+/// Speakers are returned in descending order of occurrences across windows.
+pub fn identify_speaker_list(
+    net: &SimpleNeuralNet,
+    sample: &[i16],
+    threshold: f32,
+) -> Vec<usize> {
+    let mut counts = vec![0usize; net.output_size()];
+    for win in window_samples(sample) {
+        let out = net.forward(&win);
+        if let Some((best_idx, best_val)) = out
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        {
+            if *best_val >= threshold {
+                counts[best_idx] += 1;
+            }
+        }
+    }
+    let mut pairs: Vec<(usize, usize)> = counts
+        .iter()
+        .enumerate()
+        .filter(|(_, &c)| c > 0)
+        .map(|(i, &c)| (i, c))
+        .collect();
+    pairs.sort_by(|a, b| b.1.cmp(&a.1));
+    pairs.into_iter().map(|(i, _)| i).collect()
+}
