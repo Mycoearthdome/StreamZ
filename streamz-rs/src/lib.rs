@@ -83,10 +83,13 @@ pub struct SimpleNeuralNet {
 impl SimpleNeuralNet {
     /// Create a new network with the given layer sizes
     pub fn new(input: usize, hidden: usize, output: usize) -> Self {
+        use rand::distributions::Uniform;
+        let mut rng = rand::thread_rng();
+        let dist = Uniform::new(-0.5, 0.5);
         Self {
-            w1: Array2::zeros((input, hidden)),
+            w1: Array2::from_shape_fn((input, hidden), |_| rng.sample(dist)),
             b1: Array1::zeros(hidden),
-            w2: Array2::zeros((hidden, output)),
+            w2: Array2::from_shape_fn((hidden, output), |_| rng.sample(dist)),
             b2: Array1::zeros(output),
         }
     }

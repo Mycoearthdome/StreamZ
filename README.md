@@ -38,6 +38,9 @@ Run the live streaming program:
 ```
 
 The program listens to your microphone and plays the processed signal continuously.
+If you do not hear any output, ensure your audio devices are recognized and the
+`libasound2-dev` package is installed on Linux. The neural network now starts
+with random weights so it immediately produces a non-zero signal.
 Audio output uses ALSA on Linux.
 
 ## License
