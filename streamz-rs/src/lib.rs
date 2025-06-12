@@ -8,6 +8,9 @@ use crossterm::event::{self, Event, KeyCode};
 use crossterm::terminal::enable_raw_mode;
 use tokio::time::{sleep, Duration};
 
+const SAMPLE_RATE: u32 = 44100;
+const CHANNELS: u16 = 1;
+
 #[allow(dead_code)]
 fn select_audio_host() -> cpal::Host {
     #[cfg(target_os = "linux")]
@@ -56,32 +59,24 @@ pub fn record_voice_sample(duration_secs: u64) -> Result<Vec<i16>, Box<dyn Error
     let input = host
         .default_input_device()
         .ok_or("No input device available")?;
-    let config = input.default_input_config()?;
+    let config = cpal::StreamConfig {
+        channels: CHANNELS,
+        sample_rate: cpal::SampleRate(SAMPLE_RATE),
+        buffer_size: cpal::BufferSize::Default,
+    };
 
     let buffer = Arc::new(Mutex::new(Vec::new()));
     let buffer_cb = buffer.clone();
     let err_fn = |err| eprintln!("Stream error: {}", err);
 
-    let stream = match config.sample_format() {
-        cpal::SampleFormat::I16 => input.build_input_stream(
-            &config.into(),
-            move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                buffer_cb.lock().unwrap().extend_from_slice(data);
-            },
-            err_fn,
-            None,
-        )?,
-        cpal::SampleFormat::F32 => input.build_input_stream(
-            &config.into(),
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                let mut buf = buffer_cb.lock().unwrap();
-                buf.extend(data.iter().map(|s| (*s * i16::MAX as f32) as i16));
-            },
-            err_fn,
-            None,
-        )?,
-        format => return Err(format!("Unsupported format {:?}", format).into()),
-    };
+    let stream = input.build_input_stream(
+        &config,
+        move |data: &[i16], _: &cpal::InputCallbackInfo| {
+            buffer_cb.lock().unwrap().extend_from_slice(data);
+        },
+        err_fn,
+        None,
+    )?;
 
     stream.play()?;
     std::thread::sleep(Duration::from_secs(duration_secs));
@@ -113,8 +108,12 @@ pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
     let input = host
         .default_input_device()
         .ok_or("No input device available")?;
-    let config = input.default_input_config()?;
-    let sample_rate = config.sample_rate().0 as usize;
+    let config = cpal::StreamConfig {
+        channels: CHANNELS,
+        sample_rate: cpal::SampleRate(SAMPLE_RATE),
+        buffer_size: cpal::BufferSize::Default,
+    };
+    let sample_rate = SAMPLE_RATE as usize;
 
     let buffer = Arc::new(Mutex::new(Vec::new()));
     let buffer_cb = buffer.clone();
@@ -136,94 +135,48 @@ pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
 
     let err_fn = |err| eprintln!("Stream error: {}", err);
 
-    let stream = match config.sample_format() {
-        cpal::SampleFormat::I16 => input.build_input_stream(
-            &config.into(),
-            move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                if !has_baseline_cb.load(Ordering::Relaxed) {
-                    let mut sum = ambient_sum_cb.lock().unwrap();
-                    for &sample in data {
-                        *sum += sample.abs() as f32;
-                        if ambient_count_cb.fetch_add(1, Ordering::Relaxed) >= AMBIENT_SAMPLES {
-                            *sum /= AMBIENT_SAMPLES as f32;
-                            has_baseline_cb.store(true, Ordering::Relaxed);
-                            println!("Ambient noise level: {:.2}", *sum);
-                            break;
-                        }
-                    }
-                    return;
-                }
-
-                let baseline = *ambient_sum_cb.lock().unwrap();
+    let stream = input.build_input_stream(
+        &config,
+        move |data: &[i16], _: &cpal::InputCallbackInfo| {
+            if !has_baseline_cb.load(Ordering::Relaxed) {
+                let mut sum = ambient_sum_cb.lock().unwrap();
                 for &sample in data {
-                    if !started_cb.load(Ordering::Relaxed) {
-                        if (sample.abs() as f32) > baseline * 1.2 {
-                            started_cb.store(true, Ordering::Relaxed);
-                            buffer_cb.lock().unwrap().push(sample);
-                        }
-                        continue;
+                    *sum += sample.abs() as f32;
+                    if ambient_count_cb.fetch_add(1, Ordering::Relaxed) >= AMBIENT_SAMPLES {
+                        *sum /= AMBIENT_SAMPLES as f32;
+                        has_baseline_cb.store(true, Ordering::Relaxed);
+                        println!("Ambient noise level: {:.2}", *sum);
+                        break;
                     }
+                }
+                return;
+            }
 
-                    buffer_cb.lock().unwrap().push(sample);
+            let baseline = *ambient_sum_cb.lock().unwrap();
+            for &sample in data {
+                if !started_cb.load(Ordering::Relaxed) {
                     if (sample.abs() as f32) > baseline * 1.2 {
-                        silence_count_cb.store(0, Ordering::Relaxed);
-                    } else {
-                        let c = silence_count_cb.fetch_add(1, Ordering::Relaxed) + 1;
-                        if c > sample_rate / 4 {
-                            finished_cb.store(true, Ordering::Relaxed);
-                            break;
-                        }
+                        started_cb.store(true, Ordering::Relaxed);
+                        buffer_cb.lock().unwrap().push(sample);
                     }
-                }
-            },
-            err_fn,
-            None,
-        )?,
-        cpal::SampleFormat::F32 => input.build_input_stream(
-            &config.into(),
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                if !has_baseline_cb.load(Ordering::Relaxed) {
-                    let mut sum = ambient_sum_cb.lock().unwrap();
-                    for &sample in data {
-                        *sum += sample.abs();
-                        if ambient_count_cb.fetch_add(1, Ordering::Relaxed) >= AMBIENT_SAMPLES {
-                            *sum /= AMBIENT_SAMPLES as f32;
-                            has_baseline_cb.store(true, Ordering::Relaxed);
-                            println!("Ambient noise level: {:.2}", *sum);
-                            break;
-                        }
-                    }
-                    return;
+                    continue;
                 }
 
-                let baseline = *ambient_sum_cb.lock().unwrap();
-                for &sample in data {
-                    let int_sample = (sample * i16::MAX as f32) as i16;
-                    if !started_cb.load(Ordering::Relaxed) {
-                        if sample.abs() > baseline * 1.2 {
-                            started_cb.store(true, Ordering::Relaxed);
-                            buffer_cb.lock().unwrap().push(int_sample);
-                        }
-                        continue;
-                    }
-
-                    buffer_cb.lock().unwrap().push(int_sample);
-                    if sample.abs() > baseline * 1.2 {
-                        silence_count_cb.store(0, Ordering::Relaxed);
-                    } else {
-                        let c = silence_count_cb.fetch_add(1, Ordering::Relaxed) + 1;
-                        if c > sample_rate / 4 {
-                            finished_cb.store(true, Ordering::Relaxed);
-                            break;
-                        }
+                buffer_cb.lock().unwrap().push(sample);
+                if (sample.abs() as f32) > baseline * 1.2 {
+                    silence_count_cb.store(0, Ordering::Relaxed);
+                } else {
+                    let c = silence_count_cb.fetch_add(1, Ordering::Relaxed) + 1;
+                    if c > sample_rate / 4 {
+                        finished_cb.store(true, Ordering::Relaxed);
+                        break;
                     }
                 }
-            },
-            err_fn,
-            None,
-        )?,
-        format => return Err(format!("Unsupported format {:?}", format).into()),
-    };
+            }
+        },
+        err_fn,
+        None,
+    )?;
 
     stream.play()?;
     while !finished.load(Ordering::Relaxed) {
@@ -355,7 +308,11 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
     let input = host
         .default_input_device()
         .ok_or("No input device available")?;
-    let config = input.default_input_config()?;
+    let config = cpal::StreamConfig {
+        channels: CHANNELS,
+        sample_rate: cpal::SampleRate(SAMPLE_RATE),
+        buffer_size: cpal::BufferSize::Default,
+    };
 
     let output = host
         .default_output_device()
@@ -363,8 +320,8 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
     let (_out_stream, handle) = rodio::OutputStream::try_from_device(&output)?;
     let sink = rodio::Sink::try_new(&handle)?;
 
-    let sample_rate = config.sample_rate().0;
-    let channels = config.channels() as u16;
+    let sample_rate = SAMPLE_RATE;
+    let channels = CHANNELS;
 
     let err_fn = |err| eprintln!("Stream error: {}", err);
 
@@ -429,119 +386,60 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
         });
     }
 
-    let stream = match config.sample_format() {
-        cpal::SampleFormat::I16 => {
-            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-            let net_clone = net.clone();
-            let noise_mult_cb = noise_mult.clone();
-            let ambient_sum = Arc::new(Mutex::new(0f32));
-            let ambient_count = Arc::new(AtomicUsize::new(0));
-            let has_baseline = Arc::new(AtomicBool::new(false));
-            let ambient_sum_cb = ambient_sum.clone();
-            let ambient_count_cb = ambient_count.clone();
-            let has_baseline_cb = has_baseline.clone();
+    let stream = {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let net_clone = net.clone();
+        let noise_mult_cb = noise_mult.clone();
+        let ambient_sum = Arc::new(Mutex::new(0f32));
+        let ambient_count = Arc::new(AtomicUsize::new(0));
+        let has_baseline = Arc::new(AtomicBool::new(false));
+        let ambient_sum_cb = ambient_sum.clone();
+        let ambient_count_cb = ambient_count.clone();
+        let has_baseline_cb = has_baseline.clone();
 
-            input.build_input_stream(
-                &config.into(),
-                move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                    let mut output = Vec::with_capacity(data.len());
-                    if !has_baseline_cb.load(Ordering::Relaxed) {
-                        let mut sum = ambient_sum_cb.lock().unwrap();
-                        for &sample in data {
-                            *sum += sample.abs() as f32;
-                            if ambient_count_cb.fetch_add(1, Ordering::Relaxed) >= AMBIENT_SAMPLES {
-                                *sum /= AMBIENT_SAMPLES as f32;
-                                has_baseline_cb.store(true, Ordering::Relaxed);
-                                println!("Ambient noise level: {:.2}", *sum);
-                                break;
-                            }
-                        }
-                        return;
-                    }
-
-                    let baseline = *ambient_sum_cb.lock().unwrap();
+        input.build_input_stream(
+            &config,
+            move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                let mut output = Vec::with_capacity(data.len());
+                if !has_baseline_cb.load(Ordering::Relaxed) {
+                    let mut sum = ambient_sum_cb.lock().unwrap();
                     for &sample in data {
-                        let mult = *noise_mult_cb.lock().unwrap();
-                        if (sample.abs() as f32) < baseline * mult {
-                            continue;
+                        *sum += sample.abs() as f32;
+                        if ambient_count_cb.fetch_add(1, Ordering::Relaxed) >= AMBIENT_SAMPLES {
+                            *sum /= AMBIENT_SAMPLES as f32;
+                            has_baseline_cb.store(true, Ordering::Relaxed);
+                            println!("Ambient noise level: {:.2}", *sum);
+                            break;
                         }
-                        let mut net = net_clone.lock().unwrap();
-                        let bits = i16_to_bits(sample);
-                        let out_bits = net.forward(&bits);
-                        net.train(&bits, &bits, 0.001);
-                        let out_sample = bits_to_i16(&out_bits);
-                        output.push(out_sample);
                     }
-                    if !output.is_empty() {
-                        let buffer = rodio::buffer::SamplesBuffer::new(
-                            channels,
-                            sample_rate,
-                            output.clone(),
-                        );
-                        sink.append(buffer);
-                    }
-                },
-                err_fn,
-                None,
-            )?
-        }
-        cpal::SampleFormat::F32 => {
-            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-            let net_clone = net.clone();
-            let noise_mult_cb = noise_mult.clone();
-            let ambient_sum = Arc::new(Mutex::new(0f32));
-            let ambient_count = Arc::new(AtomicUsize::new(0));
-            let has_baseline = Arc::new(AtomicBool::new(false));
-            let ambient_sum_cb = ambient_sum.clone();
-            let ambient_count_cb = ambient_count.clone();
-            let has_baseline_cb = has_baseline.clone();
+                    return;
+                }
 
-            input.build_input_stream(
-                &config.into(),
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    let mut output = Vec::with_capacity(data.len());
-                    if !has_baseline_cb.load(Ordering::Relaxed) {
-                        let mut sum = ambient_sum_cb.lock().unwrap();
-                        for &sample in data {
-                            *sum += sample.abs();
-                            if ambient_count_cb.fetch_add(1, Ordering::Relaxed) >= AMBIENT_SAMPLES {
-                                *sum /= AMBIENT_SAMPLES as f32;
-                                has_baseline_cb.store(true, Ordering::Relaxed);
-                                println!("Ambient noise level: {:.2}", *sum);
-                                break;
-                            }
-                        }
-                        return;
+                let baseline = *ambient_sum_cb.lock().unwrap();
+                for &sample in data {
+                    let mult = *noise_mult_cb.lock().unwrap();
+                    if (sample.abs() as f32) < baseline * mult {
+                        continue;
                     }
-
-                    let baseline = *ambient_sum_cb.lock().unwrap();
-                    for &sample in data {
-                        let mult = *noise_mult_cb.lock().unwrap();
-                        if sample.abs() < baseline * mult {
-                            continue;
-                        }
-                        let int_sample = (sample * i16::MAX as f32) as i16;
-                        let mut net = net_clone.lock().unwrap();
-                        let bits = i16_to_bits(int_sample);
-                        let out_bits = net.forward(&bits);
-                        net.train(&bits, &bits, 0.001);
-                        let out_sample = bits_to_i16(&out_bits);
-                        output.push(out_sample);
-                    }
-                    if !output.is_empty() {
-                        let buffer = rodio::buffer::SamplesBuffer::new(
-                            channels,
-                            sample_rate,
-                            output.clone(),
-                        );
-                        sink.append(buffer);
-                    }
-                },
-                err_fn,
-                None,
-            )?
-        }
-        format => return Err(format!("Unsupported format {:?}", format).into()),
+                    let mut net = net_clone.lock().unwrap();
+                    let bits = i16_to_bits(sample);
+                    let out_bits = net.forward(&bits);
+                    net.train(&bits, &bits, 0.001);
+                    let out_sample = bits_to_i16(&out_bits);
+                    output.push(out_sample);
+                }
+                if !output.is_empty() {
+                    let buffer = rodio::buffer::SamplesBuffer::new(
+                        channels,
+                        sample_rate,
+                        output.clone(),
+                    );
+                    sink.append(buffer);
+                }
+            },
+            err_fn,
+            None,
+        )?
     };
 
     stream.play()?;
