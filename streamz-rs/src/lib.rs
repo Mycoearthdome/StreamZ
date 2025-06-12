@@ -32,6 +32,32 @@ fn detect_audio_sink() -> &'static str {
     "ALSA"
 }
 
+
+/// Build an input stream and convert incoming samples to i16
+fn build_input_stream_i16<F>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    mut data_cb: F,
+    mut err_cb: impl FnMut(cpal::StreamError) + Send + 'static,
+) -> Result<cpal::Stream, Box<dyn Error>>
+where
+    F: FnMut(&[i16], &cpal::InputCallbackInfo) + Send + 'static,
+{
+    use cpal::{Sample, SampleFormat};
+    let format = device.default_input_config()?.sample_format();
+    match format {
+        SampleFormat::I16 => Ok(device.build_input_stream(config, data_cb, err_cb, None)?),
+        SampleFormat::U16 => Ok(device.build_input_stream(config, move |data: &[u16], info| {
+            let converted: Vec<i16> = data.iter().map(|&s| Sample::to_i16(&s)).collect();
+            data_cb(&converted, info);
+        }, err_cb, None)?),
+        SampleFormat::F32 => Ok(device.build_input_stream(config, move |data: &[f32], info| {
+            let converted: Vec<i16> = data.iter().map(|&s| Sample::to_i16(&s)).collect();
+            data_cb(&converted, info);
+        }, err_cb, None)?),
+        other => Err(format!("Unsupported input sample format: {:?}", other).into()),
+    }
+}
 /// Convert a 16-bit sample to a vector of bits represented as f32 values (0.0 or 1.0)
 pub fn i16_to_bits(val: i16) -> [f32; 16] {
     let mut bits = [0.0f32; 16];
@@ -87,13 +113,13 @@ pub fn record_voice_sample(duration_secs: u64) -> Result<Vec<i16>, Box<dyn Error
     let buffer = Arc::new(Mutex::new(Vec::new()));
     let buffer_cb = buffer.clone();
     let err_fn = |err| eprintln!("Stream error: {}", err);
-    let stream = input.build_input_stream(
+    let stream = build_input_stream_i16(
+        &input,
         &config,
         move |data: &[i16], _: &cpal::InputCallbackInfo| {
             buffer_cb.lock().unwrap().extend_from_slice(data);
         },
         err_fn,
-        None,
     )?;
 
     stream.play()?;
@@ -159,7 +185,8 @@ pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
 
     let err_fn = |err| eprintln!("Stream error: {}", err);
 
-    let stream = input.build_input_stream(
+    let stream = build_input_stream_i16(
+        &input,
         &config,
         move |data: &[i16], _: &cpal::InputCallbackInfo| {
             if !has_baseline_cb.load(Ordering::Relaxed) {
@@ -211,7 +238,6 @@ pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
             }
         },
         err_fn,
-        None,
     )?;
 
     stream.play()?;
@@ -413,7 +439,8 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
         let ambient_count_cb = ambient_count.clone();
         let has_baseline_cb = has_baseline.clone();
 
-        input.build_input_stream(
+        build_input_stream_i16(
+            &input,
             &config,
             move |data: &[i16], _: &cpal::InputCallbackInfo| {
                 let mut output = Vec::with_capacity(data.len());
@@ -457,7 +484,6 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
                 }
             },
             err_fn,
-            None,
         )?
     };
 
