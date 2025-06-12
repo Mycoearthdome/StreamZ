@@ -2,6 +2,7 @@
 // use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 // use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use hound;
+use rustfft::{num_complex::Complex, FftPlanner};
 use minimp3::{Decoder, Error as Mp3Error, Frame};
 use ndarray::{s, Array1, Array2, Axis};
 use ndarray_npy::{NpzReader, NpzWriter};
@@ -12,13 +13,14 @@ use std::fs::File;
 
 const DEFAULT_SAMPLE_RATE: u32 = 44100;
 pub const WINDOW_SIZE: usize = 256;
+pub const FEATURE_SIZE: usize = WINDOW_SIZE / 2;
 
 /// Convert a raw i16 audio sample to a normalized f32 value in [-1.0, 1.0]
 pub fn i16_to_f32(sample: i16) -> f32 {
     sample as f32 / i16::MAX as f32
 }
 
-/// Split samples into consecutive windows of `WINDOW_SIZE` normalized floats
+/// Split samples into windows and compute FFT magnitude features for each window.
 fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
     use rayon::prelude::*;
     samples
@@ -27,18 +29,32 @@ fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
         .collect::<Vec<_>>()
         .par_iter()
         .map(|c| {
-            let floats: Vec<f32> = c.iter().copied().map(i16_to_f32).collect();
-            let mean = floats.iter().copied().sum::<f32>() / floats.len() as f32;
-            let var = floats
+            // Create planner per window to avoid cross-thread sharing issues
+            let mut planner = FftPlanner::<f32>::new();
+            let fft = planner.plan_fft_forward(WINDOW_SIZE);
+            let mut buffer: Vec<Complex<f32>> = c
+                .iter()
+                .copied()
+                .map(|v| Complex::new(i16_to_f32(v), 0.0))
+                .collect();
+            fft.process(&mut buffer);
+            let mut mags: Vec<f32> = buffer
+                .iter()
+                .take(FEATURE_SIZE)
+                .map(|c| c.norm())
+                .collect();
+            let mean = mags.iter().copied().sum::<f32>() / mags.len() as f32;
+            let var = mags
                 .iter()
                 .map(|&v| {
                     let d = v - mean;
                     d * d
                 })
                 .sum::<f32>()
-                / floats.len() as f32;
+                / mags.len() as f32;
             let std = var.sqrt().max(1e-6);
-            floats.iter().map(|&v| (v - mean) / std).collect()
+            mags.iter_mut().for_each(|v| *v = (*v - mean) / std);
+            mags
         })
         .collect()
 }
