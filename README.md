@@ -11,6 +11,8 @@ StreamZ is a small Rust application that trains and executes a simple neural net
 - Unlabelled files are compared against existing speakers using a confidence threshold; low confidence will create a new speaker entry automatically.
 - Works with recordings that use different sample rates and can grow to
   handle any number of speakers over time.
+- A helper function `identify_speaker_list` returns all detected speakers in
+  a recording based on per-window predictions.
 
 ## Installation
 
