@@ -117,18 +117,24 @@ fn main() {
                 if let Some(label) = *class {
                     let sz = net.output_size();
                     pretrain_network(&mut net, &samples, label, sz, 30, 0.01);
+                    net.record_training_file(label, path);
                 } else if let Some(pred) =
                     identify_speaker_with_threshold(&net, &samples, CONF_THRESHOLD)
                 {
                     *class = Some(pred);
                     let sz = net.output_size();
                     pretrain_network(&mut net, &samples, pred, sz, 30, 0.01);
+                    net.record_training_file(pred, path);
                 } else {
                     net.add_output_class();
                     let new_label = net.output_size() - 1;
                     *class = Some(new_label);
                     let sz = net.output_size();
                     pretrain_network(&mut net, &samples, new_label, sz, 30, 0.01);
+                    net.record_training_file(new_label, path);
+                }
+                if let Err(e) = net.save(MODEL_PATH) {
+                    eprintln!("Failed to save model: {}", e);
                 }
             }
             Err(e) => eprintln!("Skipping {}: {}", path, e),

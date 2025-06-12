@@ -32,6 +32,7 @@ analysis or future work on speech reconstruction.
 - Noise gate threshold adjustable in real time using the Up and Down arrow keys.
 - MP3 input files are automatically decoded to WAV samples.
 - Unknown speakers can be detected using a confidence threshold.
+- The output layer is statically sized for up to 153 speakers.
 
 ## Requirements
 
@@ -62,7 +63,14 @@ The program listens to your microphone and prints the predicted speaker for shor
 windows of speech.  On first run you will be prompted to record a few example
 sentences for each speaker.  These samples are used to train the network and are
 written to `.wav` files along with an `model.npz` weight file.  Subsequent runs
-load the saved model automatically.
+load the saved model automatically. Each speaker's training files are stored
+inside `model.npz` so the association between filenames and speakers can be
+reused later. The model file also stores each speaker's weights and biases
+individually using names like `w1`/`b1`, `w2`/`b2` and so on. The network
+preallocates space for 153 speakers and keeps track of how many are trained.
+Whenever a new speaker is recognised the next slot is initialised and saved
+immediately so training across multiple runs preserves every speaker's
+parameters.
 During streaming you can press the Up and Down arrow keys to raise or lower the
 noise gate threshold. The current level is printed each time you adjust it.
 
