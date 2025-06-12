@@ -4,7 +4,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use streamz_rs::{
-    identify_speaker, identify_speaker_with_threshold, load_audio_samples, pretrain_network,
+    compute_speaker_embeddings, identify_speaker_cosine, load_audio_samples, pretrain_network,
     train_from_files, SimpleNeuralNet, FEATURE_SIZE,
 };
 
@@ -127,14 +127,18 @@ fn main() {
                 DROPOUT_PROB,
             );
         }
+        let embeds = compute_speaker_embeddings(&net).unwrap_or_default();
         let mut correct = 0usize;
         let total = eval_set.len();
         for (path, class) in eval_set.drain(..) {
             match load_audio_samples(&path) {
                 Ok(samples) => {
-                    let pred = identify_speaker(&net, &samples);
-                    if pred == class {
-                        correct += 1;
+                    if let Some(pred) =
+                        identify_speaker_cosine(&net, &embeds, &samples, conf_threshold)
+                    {
+                        if pred == class {
+                            correct += 1;
+                        }
                     }
                 }
                 Err(e) => eprintln!("Skipping {}: {}", path, e),
@@ -195,6 +199,8 @@ fn main() {
             .unwrap(),
     );
 
+    let mut speaker_embeds = compute_speaker_embeddings(&net).unwrap_or_default();
+
     for (path, class) in train_files.iter_mut() {
         pb.set_message(path.to_string());
         match load_audio_samples(path) {
@@ -212,7 +218,7 @@ fn main() {
                     );
                     net.record_training_file(label, path);
                 } else if let Some(pred) =
-                    identify_speaker_with_threshold(&net, &samples, conf_threshold)
+                    identify_speaker_cosine(&net, &speaker_embeds, &samples, conf_threshold)
                 {
                     *class = Some(pred);
                     let sz = net.output_size();
@@ -242,6 +248,7 @@ fn main() {
                     );
                     net.record_training_file(new_label, path);
                 }
+                speaker_embeds = compute_speaker_embeddings(&net).unwrap_or_default();
                 if let Err(e) = net.save(MODEL_PATH) {
                     eprintln!("Failed to save model: {}", e);
                 }
