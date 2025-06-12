@@ -2,33 +2,26 @@
 
 StreamZ is a lightweight prototype for handling Multiple Input Multiple Output (MIMO) data streams and processing them with a neural network in real time.
 
-The project focuses on a Rust implementation capable of processing voice data from WAV files at the bit-stream level. The neural network reads an input WAV, runs the audio through a simple network and either writes a new WAV file or streams the result directly to your speakers.
+The project now focuses on streaming voice data directly from your microphone. Audio is captured live, passed through a small neural network and streamed back to your speakers.
 
 ## Features
 
 - `MIMOStream` simulator generating bit vectors.
 - `SimpleNeuralNet` for quick experimentation.
-- Rust library `streamz-rs` for reading WAV files, passing the audio through a small neural network and writing or streaming the output.
-- Example programs demonstrating file processing and live streaming.
+- Rust library `streamz-rs` for live microphone streaming through a small neural network.
+- Example program demonstrating live streaming from the microphone.
 
 ## Requirements
 
 - Rust 1.70+ and Cargo.
 
-Build the examples with:
+Build the example with:
 
 ```bash
-cargo run --example process_file --manifest-path streamz-rs/Cargo.toml
 cargo run --example live_stream --manifest-path streamz-rs/Cargo.toml
 ```
 
 ## Usage
-
-Run the file processing example:
-
-```bash
-cargo run --example process_file --manifest-path streamz-rs/Cargo.toml
-```
 
 Run the live streaming example:
 
@@ -36,7 +29,7 @@ Run the live streaming example:
 cargo run --example live_stream --manifest-path streamz-rs/Cargo.toml
 ```
 
-The examples read `input.wav` and either save a processed file named `output.wav` or play the output continuously.
+The example listens to your microphone and plays the processed signal continuously.
 
 ## License
 
