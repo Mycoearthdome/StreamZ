@@ -2,7 +2,7 @@
 name = "streamz-rs"
 version = "0.1.0"
 edition = "2021"
-build = "build.rs"
+# build.rs no longer needed
 
 [dependencies]
 ndarray = "0.15"
