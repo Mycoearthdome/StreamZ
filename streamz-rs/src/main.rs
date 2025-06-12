@@ -1,9 +1,10 @@
+use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 use streamz_rs::{
-    audio_metadata, identify_speaker_with_threshold, load_audio_samples, pretrain_network,
-    train_from_files, SimpleNeuralNet, WINDOW_SIZE,
+    identify_speaker_with_threshold, load_audio_samples, pretrain_network, train_from_files,
+    SimpleNeuralNet, WINDOW_SIZE,
 };
 
 const MODEL_PATH: &str = "model.npz";
@@ -50,16 +51,6 @@ fn write_train_files(path: &str, files: &[(String, Option<usize>)]) {
     }
 }
 
-fn print_file_specs(files: &[(String, Option<usize>)]) {
-    println!("Detected file specs:");
-    for (path, _) in files {
-        match audio_metadata(path) {
-            Ok((sr, bits)) => println!("{} -> {} Hz, {} bits", path, sr, bits),
-            Err(e) => eprintln!("{} -> failed to read metadata: {}", path, e),
-        }
-    }
-}
-
 /// Determine the number of speakers based on the provided training list.
 /// The highest class index is assumed to be the last speaker and speaker
 /// indexing starts at 0.
@@ -78,7 +69,6 @@ fn main() {
         eprintln!("{} is empty", TRAIN_FILE_LIST);
         return;
     }
-    print_file_specs(&train_files);
 
     let mut num_speakers = count_speakers(&train_files);
     let mut net = if Path::new(MODEL_PATH).exists() {
@@ -113,7 +103,15 @@ fn main() {
         n
     };
 
+    let pb = ProgressBar::new(train_files.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{msg} {bar:40} {pos}/{len} ETA {eta}")
+            .unwrap(),
+    );
+
     for (path, class) in train_files.iter_mut() {
+        pb.set_message(path.to_string());
         match load_audio_samples(path) {
             Ok(samples) => {
                 if let Some(label) = *class {
@@ -135,7 +133,10 @@ fn main() {
             }
             Err(e) => eprintln!("Skipping {}: {}", path, e),
         }
+        pb.inc(1);
     }
+
+    pb.finish_and_clear();
 
     if let Err(e) = net.save(MODEL_PATH) {
         eprintln!("Failed to save model: {}", e);

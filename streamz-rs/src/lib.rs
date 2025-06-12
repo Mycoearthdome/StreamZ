@@ -20,11 +20,14 @@ pub fn i16_to_f32(sample: i16) -> f32 {
 
 /// Split samples into consecutive windows of `WINDOW_SIZE` normalized floats
 fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
+    use rayon::prelude::*;
     samples
         .chunks(WINDOW_SIZE)
         .filter(|c| c.len() == WINDOW_SIZE)
+        .collect::<Vec<_>>()
+        .par_iter()
         .map(|c| {
-            let floats: Vec<f32> = c.iter().map(|&s| i16_to_f32(s)).collect();
+            let floats: Vec<f32> = c.iter().copied().map(i16_to_f32).collect();
             let mean = floats.iter().copied().sum::<f32>() / floats.len() as f32;
             let var = floats
                 .iter()
@@ -135,9 +138,17 @@ pub fn train_from_files(
     epochs: usize,
     lr: f32,
 ) -> Result<(), Box<dyn Error>> {
+    use indicatif::{ProgressBar, ProgressStyle};
     println!("Training on {} files individually", total_files);
+    let pb = ProgressBar::new(files.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{msg} {bar:40} {pos}/{len} ETA {eta}")
+            .unwrap(),
+    );
+
     for &(path, class) in files {
-        println!("Processing {}", path);
+        pb.set_message(path.to_string());
         let (sample_rate, bits) = match audio_metadata(path) {
             Ok(meta) => meta,
             Err(e) => {
@@ -145,10 +156,6 @@ pub fn train_from_files(
                 continue;
             }
         };
-        println!(
-            "Training on {} -> {} Hz, {} bits per sample",
-            path, sample_rate, bits
-        );
         net.set_dataset_specs(sample_rate, bits);
         if bits != 16 {
             eprintln!("Skipping {}: Only 16-bit audio supported", path);
@@ -163,7 +170,9 @@ pub fn train_from_files(
                 }
             }
         }
+        pb.inc(1);
     }
+    pb.finish_and_clear();
     Ok(())
 }
 
