@@ -1,4 +1,5 @@
 use indicatif::{ProgressBar, ProgressStyle};
+use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -6,7 +7,6 @@ use streamz_rs::{
     identify_speaker, identify_speaker_with_threshold, load_audio_samples, pretrain_network,
     train_from_files, SimpleNeuralNet, FEATURE_SIZE,
 };
-use std::env;
 
 const MODEL_PATH: &str = "model.npz";
 const TRAIN_FILE_LIST: &str = "train_files.txt";
@@ -14,6 +14,10 @@ const TRAIN_FILE_LIST: &str = "train_files.txt";
 /// Higher values make the program less eager to reuse a known speaker
 /// and instead create a new one when confidence is low.
 const DEFAULT_CONF_THRESHOLD: f32 = 0.8;
+/// Number of training epochs for each file.
+const TRAIN_EPOCHS: usize = 15;
+/// Dropout probability used during training.
+const DROPOUT_PROB: f32 = streamz_rs::DEFAULT_DROPOUT;
 
 fn load_train_files(path: &str) -> Vec<(String, Option<usize>)> {
     if let Ok(content) = fs::read_to_string(path) {
@@ -75,10 +79,16 @@ fn main() {
         if let Some(val) = args.get(idx + 1) {
             match val.parse::<f32>() {
                 Ok(v) => conf_threshold = v,
-                Err(_) => eprintln!("Invalid value for --threshold '{}', using default {}", val, DEFAULT_CONF_THRESHOLD),
+                Err(_) => eprintln!(
+                    "Invalid value for --threshold '{}', using default {}",
+                    val, DEFAULT_CONF_THRESHOLD
+                ),
             }
         } else {
-            eprintln!("Missing value for --threshold, using default {}", DEFAULT_CONF_THRESHOLD);
+            eprintln!(
+                "Missing value for --threshold, using default {}",
+                DEFAULT_CONF_THRESHOLD
+            );
         }
     }
 
@@ -102,14 +112,20 @@ fn main() {
         labelled.shuffle(&mut rng);
         let split = (labelled.len() as f32 * 0.2).ceil() as usize;
         let mut eval_set = labelled.split_off(labelled.len().saturating_sub(split));
-        let train_refs: Vec<(&str, usize)> = labelled
-            .iter()
-            .map(|(p, c)| (p.as_str(), *c))
-            .collect();
+        let train_refs: Vec<(&str, usize)> =
+            labelled.iter().map(|(p, c)| (p.as_str(), *c)).collect();
         let mut net = SimpleNeuralNet::new(FEATURE_SIZE, 128, count_speakers(&train_files).max(1));
         if !train_refs.is_empty() {
             let out_sz = net.output_size();
-            let _ = train_from_files(&mut net, &train_refs, train_refs.len(), out_sz, 30, 0.01);
+            let _ = train_from_files(
+                &mut net,
+                &train_refs,
+                train_refs.len(),
+                out_sz,
+                TRAIN_EPOCHS,
+                0.01,
+                DROPOUT_PROB,
+            );
         }
         let mut correct = 0usize;
         let total = eval_set.len();
@@ -157,15 +173,20 @@ fn main() {
             .collect();
         if !train_refs.is_empty() {
             let out_sz = n.output_size();
-            if let Err(e) =
-                train_from_files(&mut n, &train_refs, train_files.len(), out_sz, 30, 0.01)
-            {
+            if let Err(e) = train_from_files(
+                &mut n,
+                &train_refs,
+                train_files.len(),
+                out_sz,
+                TRAIN_EPOCHS,
+                0.01,
+                DROPOUT_PROB,
+            ) {
                 eprintln!("Training failed: {}", e);
             }
         }
         n
     };
-
 
     let pb = ProgressBar::new(train_files.len() as u64);
     pb.set_style(
@@ -180,21 +201,45 @@ fn main() {
             Ok(samples) => {
                 if let Some(label) = *class {
                     let sz = net.output_size();
-                    pretrain_network(&mut net, &samples, label, sz, 30, 0.01);
+                    pretrain_network(
+                        &mut net,
+                        &samples,
+                        label,
+                        sz,
+                        TRAIN_EPOCHS,
+                        0.01,
+                        DROPOUT_PROB,
+                    );
                     net.record_training_file(label, path);
                 } else if let Some(pred) =
                     identify_speaker_with_threshold(&net, &samples, conf_threshold)
                 {
                     *class = Some(pred);
                     let sz = net.output_size();
-                    pretrain_network(&mut net, &samples, pred, sz, 30, 0.01);
+                    pretrain_network(
+                        &mut net,
+                        &samples,
+                        pred,
+                        sz,
+                        TRAIN_EPOCHS,
+                        0.01,
+                        DROPOUT_PROB,
+                    );
                     net.record_training_file(pred, path);
                 } else {
                     net.add_output_class();
                     let new_label = net.output_size() - 1;
                     *class = Some(new_label);
                     let sz = net.output_size();
-                    pretrain_network(&mut net, &samples, new_label, sz, 30, 0.01);
+                    pretrain_network(
+                        &mut net,
+                        &samples,
+                        new_label,
+                        sz,
+                        TRAIN_EPOCHS,
+                        0.01,
+                        DROPOUT_PROB,
+                    );
                     net.record_training_file(new_label, path);
                 }
                 if let Err(e) = net.save(MODEL_PATH) {
