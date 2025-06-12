@@ -333,13 +333,7 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
 
     let err_fn = |err| eprintln!("Stream error: {}", err);
 
-    println!("Recording your voice for 3 seconds...");
-    let samples = record_voice_sample(3)?;
-    {
-        let mut net_lock = net.lock().unwrap();
-        pretrain_network(&mut net_lock, &samples, 1, 0.001);
-    }
-    println!("Initial training complete.");
+    println!("Beginning training. Please read each sentence after the prompt.");
 
     const PROMPTS: [&str; 15] = [
         "The quick brown fox jumps over the lazy dog.",
