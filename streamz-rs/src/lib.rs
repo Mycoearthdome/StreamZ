@@ -453,6 +453,12 @@ pub fn identify_speaker_with_threshold(
     sample: &[i16],
     threshold: f32,
 ) -> Option<usize> {
+    // If there's only a single speaker known, every prediction will trivially
+    // have a confidence of 1.0. In that case we should treat the result as
+    // "unknown" so new speakers can be added.
+    if net.output_size() <= 1 {
+        return None;
+    }
     let mut sums = vec![0.0f32; net.output_size()];
     let mut count = 0f32;
     for win in window_samples(sample) {
