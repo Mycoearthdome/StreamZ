@@ -19,6 +19,8 @@ indicatif = "0.17"
 rustfft = "6"
 rustdct = "0.7"
 mel_filter = "0.1"
+rubato = "0.13"
+realfft = "0.3"
 
 [[bin]]
 name = "StreamZ"

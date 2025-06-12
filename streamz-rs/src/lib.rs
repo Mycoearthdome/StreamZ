@@ -12,6 +12,7 @@ use rand::Rng;
 // use rodio;
 use std::error::Error;
 use std::fs::File;
+use rubato::{FftFixedInOut, Resampler};
 
 const DEFAULT_SAMPLE_RATE: u32 = 44100;
 pub const WINDOW_SIZE: usize = 1024;
@@ -36,6 +37,30 @@ pub fn augment(samples: &[i16]) -> Vec<i16> {
 /// Convert a raw i16 audio sample to a normalized f32 value in [-1.0, 1.0]
 pub fn i16_to_f32(sample: i16) -> f32 {
     sample as f32 / i16::MAX as f32
+}
+
+/// Resample i16 samples to 44.1kHz using rubato
+pub fn resample_to_44100(samples: &[i16], from_rate: u32) -> Result<Vec<i16>, Box<dyn Error>> {
+    if from_rate == DEFAULT_SAMPLE_RATE {
+        return Ok(samples.to_vec());
+    }
+    let chunk_size = 1024;
+    let input: Vec<Vec<f32>> = vec![samples
+        .iter()
+        .map(|&s| i16_to_f32(s))
+        .collect()];
+    let mut resampler = FftFixedInOut::<f32>::new(
+        from_rate as usize,
+        DEFAULT_SAMPLE_RATE as usize,
+        chunk_size,
+        1,
+    )?;
+    let output = resampler.process(&input, None)?;
+    let mut result = Vec::with_capacity(output[0].len());
+    for frame in &output[0] {
+        result.push((frame * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16);
+    }
+    Ok(result)
 }
 
 /// Split samples into windows and compute MFCC features for each window.
@@ -114,11 +139,10 @@ pub fn load_wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
     if reader.spec().bits_per_sample != 16 {
         return Err("Only 16-bit audio supported".into());
     }
-    if reader.spec().sample_rate != DEFAULT_SAMPLE_RATE {
-        return Err("Unsupported sample rate".into());
-    }
+    let sample_rate = reader.spec().sample_rate;
     let samples: Result<Vec<i16>, _> = reader.samples::<i16>().collect();
-    Ok(samples?)
+    let samples = samples?;
+    resample_to_44100(&samples, sample_rate)
 }
 
 /// Load samples from an MP3 file using the `minimp3` decoder. Returns the
@@ -146,9 +170,6 @@ pub fn load_mp3_samples(path: &str) -> Result<(Vec<i16>, u32), Box<dyn Error>> {
     if sample_rate == 0 {
         return Err("No frames decoded".into());
     }
-    if sample_rate != DEFAULT_SAMPLE_RATE {
-        return Err("Unsupported sample rate".into());
-    }
     Ok((samples, sample_rate))
 }
 
@@ -156,8 +177,8 @@ pub fn load_mp3_samples(path: &str) -> Result<(Vec<i16>, u32), Box<dyn Error>> {
 /// extension.
 pub fn load_audio_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
     if path.to_ascii_lowercase().ends_with(".mp3") {
-        let (samples, _) = load_mp3_samples(path)?;
-        Ok(samples)
+        let (samples, sr) = load_mp3_samples(path)?;
+        resample_to_44100(&samples, sr)
     } else {
         load_wav_samples(path)
     }
@@ -168,22 +189,14 @@ pub fn load_audio_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
 pub fn audio_metadata(path: &str) -> Result<(u32, u16), Box<dyn Error>> {
     if path.to_ascii_lowercase().ends_with(".mp3") {
         let mut decoder = Decoder::new(File::open(path)?);
-        if let Ok(Frame { sample_rate, .. }) = decoder.next_frame() {
-            if sample_rate as u32 != DEFAULT_SAMPLE_RATE {
-                Err("Unsupported sample rate".into())
-            } else {
-                Ok((sample_rate as u32, 16))
-            }
+        if let Ok(Frame { .. }) = decoder.next_frame() {
+            Ok((DEFAULT_SAMPLE_RATE, 16))
         } else {
             Err("Unable to decode MP3".into())
         }
     } else {
         let spec = hound::WavReader::open(path)?.spec();
-        if spec.sample_rate != DEFAULT_SAMPLE_RATE {
-            Err("Unsupported sample rate".into())
-        } else {
-            Ok((spec.sample_rate, spec.bits_per_sample))
-        }
+        Ok((DEFAULT_SAMPLE_RATE, spec.bits_per_sample))
     }
 }
 
