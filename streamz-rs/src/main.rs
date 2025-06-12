@@ -16,7 +16,9 @@ const NUM_SPEAKERS: usize = 2;
 
 fn main() {
     let mut net = SimpleNeuralNet::new(WINDOW_SIZE, 32, NUM_SPEAKERS);
-    if let Err(e) = train_from_files(&mut net, &TRAIN_FILES, NUM_SPEAKERS, 1, 0.001) {
+    // Train longer and with a slightly higher learning rate so the tiny
+    // dataset actually influences the model weights.
+    if let Err(e) = train_from_files(&mut net, &TRAIN_FILES, NUM_SPEAKERS, 30, 0.01) {
         eprintln!("Training failed: {}", e);
         return;
     }
