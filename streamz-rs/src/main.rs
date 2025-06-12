@@ -2,8 +2,8 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use streamz_rs::{
-    audio_metadata, identify_speaker_with_threshold, load_audio_samples,
-    train_from_files, SimpleNeuralNet, WINDOW_SIZE,
+    audio_metadata, identify_speaker_with_threshold, load_audio_samples, train_from_files,
+    SimpleNeuralNet, WINDOW_SIZE,
 };
 
 const MODEL_PATH: &str = "model.npz";
@@ -13,7 +13,6 @@ const CONF_THRESHOLD: f32 = 0.6;
 fn load_train_files(path: &str) -> Vec<(String, Option<usize>)> {
     if let Ok(content) = fs::read_to_string(path) {
         let mut files = Vec::new();
-        let mut has_labels = false;
         for line in content.lines() {
             let mut parts = line.split(',');
             if let Some(p) = parts.next() {
@@ -24,33 +23,15 @@ fn load_train_files(path: &str) -> Vec<(String, Option<usize>)> {
                 if let Some(c) = parts.next() {
                     if let Ok(cls) = c.trim().parse::<usize>() {
                         files.push((path, Some(cls)));
-                        has_labels = true;
                         continue;
                     }
                 }
                 files.push((path, None));
             }
         }
-        if !has_labels {
-            files.extend([
-                ("examples/training_data/arctic_a0008.wav".into(), Some(0)),
-                ("examples/training_data/arctic_a0015.wav".into(), Some(0)),
-                ("examples/training_data/arctic_a0021.wav".into(), Some(0)),
-                ("examples/training_data/arctic_b0196.wav".into(), Some(1)),
-                ("examples/training_data/arctic_b0356.wav".into(), Some(1)),
-                ("examples/training_data/arctic_b0417.wav".into(), Some(1)),
-            ]);
-        }
         files
     } else {
-        vec![
-            ("examples/training_data/arctic_a0008.wav".into(), Some(0)),
-            ("examples/training_data/arctic_a0015.wav".into(), Some(0)),
-            ("examples/training_data/arctic_a0021.wav".into(), Some(0)),
-            ("examples/training_data/arctic_b0196.wav".into(), Some(1)),
-            ("examples/training_data/arctic_b0356.wav".into(), Some(1)),
-            ("examples/training_data/arctic_b0417.wav".into(), Some(1)),
-        ]
+        Vec::new()
     }
 }
 
@@ -79,17 +60,17 @@ fn print_file_specs(files: &[(String, Option<usize>)]) {
     }
 }
 
-fn relabel_files(
-    net: &SimpleNeuralNet,
-    files: &mut [(String, Option<usize>)],
-) -> Result<(), Box<dyn std::error::Error>> {
+fn relabel_files(net: &SimpleNeuralNet, files: &mut [(String, Option<usize>)]) {
     for (path, class) in files.iter_mut() {
-        let samples = load_audio_samples(path)?;
-        if let Some(pred) = identify_speaker_with_threshold(net, &samples, CONF_THRESHOLD) {
-            *class = Some(pred);
+        match load_audio_samples(path) {
+            Ok(samples) => {
+                if let Some(pred) = identify_speaker_with_threshold(net, &samples, CONF_THRESHOLD) {
+                    *class = Some(pred);
+                }
+            }
+            Err(e) => eprintln!("Skipping {}: {}", path, e),
         }
     }
-    Ok(())
 }
 
 /// Determine the number of speakers based on the provided training list.
@@ -151,16 +132,13 @@ fn main() {
         n
     };
 
-    if let Err(e) = relabel_files(&net, &mut train_files) {
-        eprintln!("Failed to relabel files: {}", e);
-    } else {
-        write_train_files(TRAIN_FILE_LIST, &train_files);
-        println!("Updated training file labels:");
-        for (p, c) in &train_files {
-            match c {
-                Some(cls) => println!("{} -> speaker {}", p, cls + 1),
-                None => println!("{} -> speaker unknown", p),
-            }
+    relabel_files(&net, &mut train_files);
+    write_train_files(TRAIN_FILE_LIST, &train_files);
+    println!("Updated training file labels:");
+    for (p, c) in &train_files {
+        match c {
+            Some(cls) => println!("{} -> speaker {}", p, cls + 1),
+            None => println!("{} -> speaker unknown", p),
         }
     }
 }
