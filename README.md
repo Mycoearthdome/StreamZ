@@ -2,6 +2,17 @@
 
 StreamZ is a lightweight prototype for handling real time voice data and processing it with a neural network.  The current version focuses on speaker identification rather than audio reconstruction.
 
+## What the Program Achieves
+
+StreamZ demonstrates a very small audio classification pipeline built entirely in
+Rust. The application shows how short WAV recordings can be used to train a
+feed‑forward neural network and how that network can then recognise a speaker in
+new audio samples. It packages the recorded training data and the resulting
+model weights so that the classifier can be reused in subsequent runs. While the
+network architecture is intentionally simple, the project provides a clear
+example of end‑to‑end speaker recognition without relying on large external
+libraries.
+
 ## Project Goal
 
 The aim of this repository is to experiment with real‑time voice streaming and
