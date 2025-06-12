@@ -3,7 +3,7 @@
 // use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use hound;
 use minimp3::{Decoder, Error as Mp3Error, Frame};
-use ndarray::{Array1, Array2, Axis};
+use ndarray::{Array1, Array2, Axis, s};
 use ndarray_npy::{NpzReader, NpzWriter};
 use rand::Rng;
 // use rodio;
@@ -185,6 +185,24 @@ impl SimpleNeuralNet {
 
     pub fn output_size(&self) -> usize {
         self.b2.len()
+    }
+
+    /// Add a new output class to the network by expanding the last layer
+    pub fn add_output_class(&mut self) {
+        use rand::distributions::Uniform;
+        let mut rng = rand::thread_rng();
+        let dist = Uniform::new(-0.5, 0.5);
+        let hidden = self.w2.nrows();
+        let old_outputs = self.w2.ncols();
+        let mut new_w2 = Array2::<f32>::zeros((hidden, old_outputs + 1));
+        new_w2.slice_mut(s![.., ..old_outputs]).assign(&self.w2);
+        for r in 0..hidden {
+            new_w2[[r, old_outputs]] = rng.sample(dist);
+        }
+        self.w2 = new_w2;
+        let mut new_b2 = Array1::<f32>::zeros(old_outputs + 1);
+        new_b2.slice_mut(s![..old_outputs]).assign(&self.b2);
+        self.b2 = new_b2;
     }
 
     pub fn set_dataset_specs(&mut self, sample_rate: u32, bits: u16) {
