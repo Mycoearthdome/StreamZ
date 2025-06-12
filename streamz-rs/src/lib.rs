@@ -32,7 +32,6 @@ fn detect_audio_sink() -> &'static str {
     "ALSA"
 }
 
-
 /// Build an input stream and convert incoming samples to i16
 fn build_input_stream_i16<F>(
     device: &cpal::Device,
@@ -47,14 +46,24 @@ where
     let format = device.default_input_config()?.sample_format();
     match format {
         SampleFormat::I16 => Ok(device.build_input_stream(config, data_cb, err_cb, None)?),
-        SampleFormat::U16 => Ok(device.build_input_stream(config, move |data: &[u16], info| {
-            let converted: Vec<i16> = data.iter().map(|&s| Sample::to_i16(&s)).collect();
-            data_cb(&converted, info);
-        }, err_cb, None)?),
-        SampleFormat::F32 => Ok(device.build_input_stream(config, move |data: &[f32], info| {
-            let converted: Vec<i16> = data.iter().map(|&s| Sample::to_i16(&s)).collect();
-            data_cb(&converted, info);
-        }, err_cb, None)?),
+        SampleFormat::U16 => Ok(device.build_input_stream(
+            config,
+            move |data: &[u16], info| {
+                let converted: Vec<i16> = data.iter().map(|&s| s.to_sample::<i16>()).collect();
+                data_cb(&converted, info);
+            },
+            err_cb,
+            None,
+        )?),
+        SampleFormat::F32 => Ok(device.build_input_stream(
+            config,
+            move |data: &[f32], info| {
+                let converted: Vec<i16> = data.iter().map(|&s| s.to_sample::<i16>()).collect();
+                data_cb(&converted, info);
+            },
+            err_cb,
+            None,
+        )?),
         other => Err(format!("Unsupported input sample format: {:?}", other).into()),
     }
 }
