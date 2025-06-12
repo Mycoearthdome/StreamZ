@@ -1,11 +1,11 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use crossterm::event::{self, Event, KeyCode};
+use crossterm::terminal::enable_raw_mode;
 use ndarray::{Array1, Array2, Axis};
 use rand::Rng;
 use rodio;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
-use crossterm::event::{self, Event, KeyCode};
-use crossterm::terminal::enable_raw_mode;
 use tokio::time::{sleep, Duration};
 
 const SAMPLE_RATE: u32 = 44100;
@@ -97,10 +97,11 @@ pub fn pretrain_network(net: &mut SimpleNeuralNet, samples: &[i16], epochs: usiz
 
 /// Record audio for a sentence using a simple silence detector.
 pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
-    use std::sync::{Arc, Mutex};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     const AMBIENT_SAMPLES: usize = 44100;
+    const MAX_RECORD_SECS: usize = 8;
 
     println!("Please say: \"{}\"", prompt);
 
@@ -125,6 +126,7 @@ pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
     let started = Arc::new(AtomicBool::new(false));
     let silence_count = Arc::new(AtomicUsize::new(0));
     let finished = Arc::new(AtomicBool::new(false));
+    let sample_count = Arc::new(AtomicUsize::new(0));
 
     let ambient_sum_cb = ambient_sum.clone();
     let ambient_count_cb = ambient_count.clone();
@@ -132,6 +134,7 @@ pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
     let started_cb = started.clone();
     let silence_count_cb = silence_count.clone();
     let finished_cb = finished.clone();
+    let sample_count_cb = sample_count.clone();
 
     let err_fn = |err| eprintln!("Stream error: {}", err);
 
@@ -157,12 +160,18 @@ pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
                 if !started_cb.load(Ordering::Relaxed) {
                     if (sample.abs() as f32) > baseline * 1.2 {
                         started_cb.store(true, Ordering::Relaxed);
+                        sample_count_cb.store(0, Ordering::Relaxed);
                         buffer_cb.lock().unwrap().push(sample);
                     }
                     continue;
                 }
 
                 buffer_cb.lock().unwrap().push(sample);
+                sample_count_cb.fetch_add(1, Ordering::Relaxed);
+                if sample_count_cb.load(Ordering::Relaxed) > sample_rate * MAX_RECORD_SECS {
+                    finished_cb.store(true, Ordering::Relaxed);
+                    break;
+                }
                 if (sample.abs() as f32) > baseline * 1.2 {
                     silence_count_cb.store(0, Ordering::Relaxed);
                 } else {
@@ -433,11 +442,8 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
                     output.push(out_sample);
                 }
                 if !output.is_empty() {
-                    let buffer = rodio::buffer::SamplesBuffer::new(
-                        channels,
-                        sample_rate,
-                        output.clone(),
-                    );
+                    let buffer =
+                        rodio::buffer::SamplesBuffer::new(channels, sample_rate, output.clone());
                     sink.append(buffer);
                 }
             },
