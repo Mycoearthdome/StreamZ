@@ -53,6 +53,18 @@ During the run every file listed in `train_files.txt` is processed.  If a line l
   `--threshold <value>`. Lower values (e.g. `0.5`) make the program more willing
   to reuse a known speaker label.
 
+## Threaded Components
+
+Several stages now run in parallel using the [`rayon`](https://crates.io/crates/rayon) thread pool.
+
+| Task | Threaded? |
+| --- | --- |
+| Audio loading | ✅ |
+| Pretraining | ✅ |
+| Evaluation | ✅ |
+| Cosine matching | ✅ |
+| Embedding computation | ✅ |
+
 ## License
 
 This project is released under the Creative Commons Zero v1.0 Universal license.  See [LICENSE](LICENSE) for details.

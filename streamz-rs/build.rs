@@ -19,19 +19,48 @@ fn main() {
                 }
             }
         }
-        writeln!(out_file, "const TRAIN_FILES: [(&str, usize); {}] = [", entries.len()).unwrap();
+        writeln!(
+            out_file,
+            "const TRAIN_FILES: [(&str, usize); {}] = [",
+            entries.len()
+        )
+        .unwrap();
         for (p, c) in entries {
             writeln!(out_file, "    (\"{}\", {}),", p, c).unwrap();
         }
-        writeln!(out_file, "];" ).unwrap();
+        writeln!(out_file, "];").unwrap();
     } else {
         writeln!(out_file, "const TRAIN_FILES: [(&str, usize); 6] = [").unwrap();
-        writeln!(out_file, "    (\"examples/training_data/arctic_a0008.wav\", 0),").unwrap();
-        writeln!(out_file, "    (\"examples/training_data/arctic_a0015.wav\", 0),").unwrap();
-        writeln!(out_file, "    (\"examples/training_data/arctic_a0021.wav\", 0),").unwrap();
-        writeln!(out_file, "    (\"examples/training_data/arctic_b0196.wav\", 1),").unwrap();
-        writeln!(out_file, "    (\"examples/training_data/arctic_b0356.wav\", 1),").unwrap();
-        writeln!(out_file, "    (\"examples/training_data/arctic_b0417.wav\", 1),").unwrap();
-        writeln!(out_file, "];" ).unwrap();
+        writeln!(
+            out_file,
+            "    (\"examples/training_data/arctic_a0008.wav\", 0),"
+        )
+        .unwrap();
+        writeln!(
+            out_file,
+            "    (\"examples/training_data/arctic_a0015.wav\", 0),"
+        )
+        .unwrap();
+        writeln!(
+            out_file,
+            "    (\"examples/training_data/arctic_a0021.wav\", 0),"
+        )
+        .unwrap();
+        writeln!(
+            out_file,
+            "    (\"examples/training_data/arctic_b0196.wav\", 1),"
+        )
+        .unwrap();
+        writeln!(
+            out_file,
+            "    (\"examples/training_data/arctic_b0356.wav\", 1),"
+        )
+        .unwrap();
+        writeln!(
+            out_file,
+            "    (\"examples/training_data/arctic_b0417.wav\", 1),"
+        )
+        .unwrap();
+        writeln!(out_file, "];").unwrap();
     }
 }
