@@ -12,7 +12,6 @@ use std::fs::File;
 
 const DEFAULT_SAMPLE_RATE: u32 = 44100;
 pub const WINDOW_SIZE: usize = 256;
-pub const MAX_SPEAKERS: usize = 153;
 
 /// Convert a raw i16 audio sample to a normalized f32 value in [-1.0, 1.0]
 pub fn i16_to_f32(sample: i16) -> f32 {
@@ -203,8 +202,8 @@ impl SimpleNeuralNet {
         use rand::distributions::Uniform;
         let mut rng = rand::thread_rng();
         let dist = Uniform::new(-0.5, 0.5);
-        let w2 = Array2::from_shape_fn((hidden, MAX_SPEAKERS), |_| rng.sample(dist));
-        let b2 = Array1::zeros(MAX_SPEAKERS);
+        let w2 = Array2::from_shape_fn((hidden, output), |_| rng.sample(dist));
+        let b2 = Array1::zeros(output);
         Self {
             w1: Array2::from_shape_fn((input, hidden), |_| rng.sample(dist)),
             b1: Array1::zeros(hidden),
@@ -223,17 +222,25 @@ impl SimpleNeuralNet {
 
     /// Add a new output class to the network by expanding the last layer
     pub fn add_output_class(&mut self) {
-        if self.num_speakers >= MAX_SPEAKERS {
-            return;
-        }
         use rand::distributions::Uniform;
         let mut rng = rand::thread_rng();
         let dist = Uniform::new(-0.5, 0.5);
         let hidden = self.w2.nrows();
-        for r in 0..hidden {
-            self.w2[[r, self.num_speakers]] = rng.sample(dist);
+        let mut new_w2 = Array2::<f32>::zeros((hidden, self.num_speakers + 1));
+        for i in 0..self.num_speakers {
+            let col = self.w2.column(i).to_owned();
+            new_w2.column_mut(i).assign(&col);
         }
-        self.b2[self.num_speakers] = 0.0;
+        for r in 0..hidden {
+            new_w2[[r, self.num_speakers]] = rng.sample(dist);
+        }
+        self.w2 = new_w2;
+
+        let mut new_b2 = Array1::<f32>::zeros(self.num_speakers + 1);
+        for i in 0..self.num_speakers {
+            new_b2[i] = self.b2[i];
+        }
+        self.b2 = new_b2;
         if self.file_lists.len() <= self.num_speakers {
             self.file_lists.push(Vec::new());
         }
@@ -366,8 +373,8 @@ impl SimpleNeuralNet {
 
         let mut num_outputs = columns.len();
         let hidden = w1.ncols();
-        let mut w2 = Array2::<f32>::zeros((hidden, MAX_SPEAKERS));
-        let mut b2 = Array1::<f32>::zeros(MAX_SPEAKERS);
+        let mut w2 = Array2::<f32>::zeros((hidden, num_outputs.max(1)));
+        let mut b2 = Array1::<f32>::zeros(num_outputs.max(1));
         if !columns.is_empty() {
             for (i, col) in columns.into_iter().enumerate() {
                 w2.column_mut(i).assign(&col);
