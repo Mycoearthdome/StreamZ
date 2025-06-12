@@ -104,7 +104,9 @@ fn main() {
             .collect();
         if !train_refs.is_empty() {
             let out_sz = n.output_size();
-            if let Err(e) = train_from_files(&mut n, &train_refs, out_sz, 30, 0.01) {
+            if let Err(e) =
+                train_from_files(&mut n, &train_refs, train_files.len(), out_sz, 30, 0.01)
+            {
                 eprintln!("Training failed: {}", e);
             }
         }
@@ -117,7 +119,9 @@ fn main() {
                 if let Some(label) = *class {
                     let sz = net.output_size();
                     pretrain_network(&mut net, &samples, label, sz, 30, 0.01);
-                } else if let Some(pred) = identify_speaker_with_threshold(&net, &samples, CONF_THRESHOLD) {
+                } else if let Some(pred) =
+                    identify_speaker_with_threshold(&net, &samples, CONF_THRESHOLD)
+                {
                     *class = Some(pred);
                     let sz = net.output_size();
                     pretrain_network(&mut net, &samples, pred, sz, 30, 0.01);
