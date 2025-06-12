@@ -38,6 +38,8 @@ Run the live streaming program:
 ```
 
 The program listens to your microphone and plays the processed signal continuously.
+On startup it records a few seconds of your speech and uses that sample to pretrain
+the neural network so the output more closely matches your voice.
 If you do not hear any output, ensure your audio devices are recognized and the
 `libasound2-dev` package is installed on Linux. The neural network now starts
 with random weights so it immediately produces a non-zero signal.

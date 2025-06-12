@@ -27,7 +27,6 @@ fn detect_audio_sink() -> &'static str {
     "ALSA"
 }
 
-
 /// Convert a 16-bit sample to a vector of bits represented as f32 values (0.0 or 1.0)
 pub fn i16_to_bits(val: i16) -> [f32; 16] {
     let mut bits = [0.0f32; 16];
@@ -46,6 +45,57 @@ pub fn bits_to_i16(bits: &[f32]) -> i16 {
         }
     }
     value
+}
+
+/// Record a short voice sample from the default microphone and return raw `i16` samples.
+pub fn record_voice_sample(duration_secs: u64) -> Result<Vec<i16>, Box<dyn Error>> {
+    use std::sync::{Arc, Mutex};
+    let host = select_audio_host();
+    let input = host
+        .default_input_device()
+        .ok_or("No input device available")?;
+    let config = input.default_input_config()?;
+
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let buffer_cb = buffer.clone();
+    let err_fn = |err| eprintln!("Stream error: {}", err);
+
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::I16 => input.build_input_stream(
+            &config.into(),
+            move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                buffer_cb.lock().unwrap().extend_from_slice(data);
+            },
+            err_fn,
+            None,
+        )?,
+        cpal::SampleFormat::F32 => input.build_input_stream(
+            &config.into(),
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                let mut buf = buffer_cb.lock().unwrap();
+                buf.extend(data.iter().map(|s| (*s * i16::MAX as f32) as i16));
+            },
+            err_fn,
+            None,
+        )?,
+        format => return Err(format!("Unsupported format {:?}", format).into()),
+    };
+
+    stream.play()?;
+    std::thread::sleep(Duration::from_secs(duration_secs));
+    drop(stream);
+    let samples = buffer.lock().unwrap().clone();
+    Ok(samples)
+}
+
+/// Pre-train the network with a slice of `i16` samples.
+pub fn pretrain_network(net: &mut SimpleNeuralNet, samples: &[i16], epochs: usize, lr: f32) {
+    for _ in 0..epochs {
+        for &sample in samples {
+            let bits = i16_to_bits(sample);
+            net.train(&bits, &bits, lr);
+        }
+    }
 }
 
 /// Asynchronous generator simulating a MIMO bit stream
@@ -135,7 +185,9 @@ pub async fn live_stream(
     stream: &MIMOStream,
     net: &mut SimpleNeuralNet,
 ) -> Result<(), Box<dyn Error>> {
-    let output = select_audio_host().default_output_device().ok_or("No output device available")?;
+    let output = select_audio_host()
+        .default_output_device()
+        .ok_or("No output device available")?;
     println!("Detected audio backend: {}", detect_audio_sink());
     let (_out_stream, handle) = rodio::OutputStream::try_from_device(&output)?;
     let sink = rodio::Sink::try_new(&handle)?;
@@ -160,7 +212,9 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
         .ok_or("No input device available")?;
     let config = input.default_input_config()?;
 
-    let output = host.default_output_device().ok_or("No output device available")?;
+    let output = host
+        .default_output_device()
+        .ok_or("No output device available")?;
     let (_out_stream, handle) = rodio::OutputStream::try_from_device(&output)?;
     let sink = rodio::Sink::try_new(&handle)?;
 
@@ -168,6 +222,14 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
     let channels = config.channels() as u16;
 
     let err_fn = |err| eprintln!("Stream error: {}", err);
+
+    println!("Recording your voice for 3 seconds...");
+    let samples = record_voice_sample(3)?;
+    {
+        let mut net_lock = net.lock().unwrap();
+        pretrain_network(&mut net_lock, &samples, 1, 0.001);
+    }
+    println!("Initial training complete.");
 
     const AMBIENT_SAMPLES: usize = 44100; // about one second at 44.1kHz
     const THRESHOLD_MULT: f32 = 1.2; // anything above 20% of ambient noise is treated as voice
@@ -228,7 +290,9 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
                         sink.append(buffer);
                     }
                 },
-                err_fn, None)?
+                err_fn,
+                None,
+            )?
         }
         cpal::SampleFormat::F32 => {
             use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -286,7 +350,9 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
                         sink.append(buffer);
                     }
                 },
-                err_fn, None)?
+                err_fn,
+                None,
+            )?
         }
         format => return Err(format!("Unsupported format {:?}", format).into()),
     };
