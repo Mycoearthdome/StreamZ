@@ -8,6 +8,7 @@ The project now focuses on streaming voice data directly from your microphone. A
 
 - `MIMOStream` simulator generating bit vectors.
 - `SimpleNeuralNet` for quick experimentation.
+- Samples are normalized to floating point values before neural processing.
 - Rust library `streamz-rs` for live microphone streaming through a small neural network.
 - Uses ALSA for audio output on Linux.
 - Command line program demonstrating live streaming from the microphone.
