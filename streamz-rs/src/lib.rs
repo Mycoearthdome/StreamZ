@@ -51,7 +51,20 @@ fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
     samples
         .chunks(WINDOW_SIZE)
         .filter(|c| c.len() == WINDOW_SIZE)
-        .map(|c| c.iter().map(|&s| i16_to_f32(s)).collect())
+        .map(|c| {
+            let floats: Vec<f32> = c.iter().map(|&s| i16_to_f32(s)).collect();
+            let mean = floats.iter().copied().sum::<f32>() / floats.len() as f32;
+            let var = floats
+                .iter()
+                .map(|&v| {
+                    let d = v - mean;
+                    d * d
+                })
+                .sum::<f32>()
+                / floats.len() as f32;
+            let std = var.sqrt().max(1e-6);
+            floats.iter().map(|&v| (v - mean) / std).collect()
+        })
         .collect()
 }
 
