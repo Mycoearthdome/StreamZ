@@ -2,8 +2,8 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use streamz_rs::{
-    audio_metadata, identify_speaker_with_threshold, load_audio_samples, train_from_files,
-    SimpleNeuralNet, WINDOW_SIZE,
+    audio_metadata, identify_speaker_with_threshold, load_audio_samples, pretrain_network,
+    train_from_files, SimpleNeuralNet, WINDOW_SIZE,
 };
 
 const MODEL_PATH: &str = "model.npz";
@@ -60,19 +60,6 @@ fn print_file_specs(files: &[(String, Option<usize>)]) {
     }
 }
 
-fn relabel_files(net: &SimpleNeuralNet, files: &mut [(String, Option<usize>)]) {
-    for (path, class) in files.iter_mut() {
-        match load_audio_samples(path) {
-            Ok(samples) => {
-                if let Some(pred) = identify_speaker_with_threshold(net, &samples, CONF_THRESHOLD) {
-                    *class = Some(pred);
-                }
-            }
-            Err(e) => eprintln!("Skipping {}: {}", path, e),
-        }
-    }
-}
-
 /// Determine the number of speakers based on the provided training list.
 /// The highest class index is assumed to be the last speaker and speaker
 /// indexing starts at 0.
@@ -87,52 +74,68 @@ fn count_speakers(files: &[(String, Option<usize>)]) -> usize {
 
 fn main() {
     let mut train_files = load_train_files(TRAIN_FILE_LIST);
+    if train_files.is_empty() {
+        eprintln!("{} is empty", TRAIN_FILE_LIST);
+        return;
+    }
     print_file_specs(&train_files);
-    let num_speakers = count_speakers(&train_files);
-    let train_refs: Vec<(&str, usize)> = train_files
-        .iter()
-        .filter_map(|(p, c)| c.map(|cls| (p.as_str(), cls)))
-        .collect();
 
-    let net = if Path::new(MODEL_PATH).exists() {
+    let mut num_speakers = count_speakers(&train_files);
+    let mut net = if Path::new(MODEL_PATH).exists() {
         match SimpleNeuralNet::load(MODEL_PATH) {
             Ok(n) => {
                 println!("Loaded saved model from {}", MODEL_PATH);
                 n
             }
             Err(e) => {
-                eprintln!("Failed to load model: {}. Retraining...", e);
-                let mut n = SimpleNeuralNet::new(WINDOW_SIZE, 32, num_speakers);
-                if let Err(e) = train_from_files(&mut n, &train_refs, num_speakers, 30, 0.01) {
-                    eprintln!("Training failed: {}", e);
-                    return;
-                }
-                if let Err(e) = n.save(MODEL_PATH) {
-                    eprintln!("Failed to save model: {}", e);
-                }
-                n
+                eprintln!("Failed to load model: {}", e);
+                SimpleNeuralNet::new(WINDOW_SIZE, 32, num_speakers.max(1))
             }
         }
     } else {
-        if train_refs.is_empty() {
-            eprintln!(
-                "No labeled training data found in {} and no saved model present.",
-                TRAIN_FILE_LIST
-            );
-            return;
+        if num_speakers == 0 {
+            num_speakers = 1;
+            train_files[0].1 = Some(0);
         }
-        let mut n = SimpleNeuralNet::new(WINDOW_SIZE, 32, num_speakers);
-        if let Err(e) = train_from_files(&mut n, &train_refs, num_speakers, 30, 0.01) {
-            eprintln!("Training failed: {}", e);
-            return;
-        }
-        if let Err(e) = n.save(MODEL_PATH) {
-            eprintln!("Failed to save model: {}", e);
+        let mut n = SimpleNeuralNet::new(WINDOW_SIZE, 32, num_speakers.max(1));
+        let train_refs: Vec<(&str, usize)> = train_files
+            .iter()
+            .filter_map(|(p, c)| c.map(|cls| (p.as_str(), cls)))
+            .collect();
+        if !train_refs.is_empty() {
+            let out_sz = n.output_size();
+            if let Err(e) = train_from_files(&mut n, &train_refs, out_sz, 30, 0.01) {
+                eprintln!("Training failed: {}", e);
+            }
         }
         n
     };
 
-    relabel_files(&net, &mut train_files);
+    for (path, class) in train_files.iter_mut() {
+        match load_audio_samples(path) {
+            Ok(samples) => {
+                if let Some(label) = *class {
+                    let sz = net.output_size();
+                    pretrain_network(&mut net, &samples, label, sz, 30, 0.01);
+                } else if let Some(pred) = identify_speaker_with_threshold(&net, &samples, CONF_THRESHOLD) {
+                    *class = Some(pred);
+                    let sz = net.output_size();
+                    pretrain_network(&mut net, &samples, pred, sz, 30, 0.01);
+                } else {
+                    net.add_output_class();
+                    let new_label = net.output_size() - 1;
+                    *class = Some(new_label);
+                    let sz = net.output_size();
+                    pretrain_network(&mut net, &samples, new_label, sz, 30, 0.01);
+                }
+            }
+            Err(e) => eprintln!("Skipping {}: {}", path, e),
+        }
+    }
+
+    if let Err(e) = net.save(MODEL_PATH) {
+        eprintln!("Failed to save model: {}", e);
+    }
     write_train_files(TRAIN_FILE_LIST, &train_files);
     println!("Updated training file labels:");
     for (p, c) in &train_files {
