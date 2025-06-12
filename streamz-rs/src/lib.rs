@@ -314,8 +314,8 @@ impl SimpleNeuralNet {
         npz.add_array("bits", &ndarray::arr1(&[self.bits as i64]))?;
         npz.add_array("num_speakers", &ndarray::arr1(&[self.num_speakers as i64]))?;
         for idx in 0..self.num_speakers {
-            let w_name = format!("w{}", idx + 1);
-            let b_name = format!("b{}", idx + 1);
+            let w_name = format!("w2_{}", idx + 1);
+            let b_name = format!("b2_{}", idx + 1);
             let w_col = self.w2.column(idx).to_owned();
             let b_val = Array1::<f32>::from_vec(vec![self.b2[idx]]);
             npz.add_array(&w_name, &w_col)?;
@@ -349,8 +349,8 @@ impl SimpleNeuralNet {
         let mut biases = Vec::new();
         let mut idx = 1;
         loop {
-            let w_name = format!("w{}", idx);
-            let b_name = format!("b{}", idx);
+            let w_name = format!("w2_{}", idx);
+            let b_name = format!("b2_{}", idx);
             let entry_w = format!("{}.npy", w_name);
             let entry_b = format!("{}.npy", b_name);
             if names.iter().any(|n| n == &entry_w) && names.iter().any(|n| n == &entry_b) {
