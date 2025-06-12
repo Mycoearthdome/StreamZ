@@ -6,6 +6,34 @@ use std::error::Error;
 use std::sync::{Arc, Mutex};
 use tokio::time::{sleep, Duration};
 
+#[allow(dead_code)]
+fn select_audio_host() -> cpal::Host {
+    #[cfg(target_os = "linux")]
+    {
+        use cpal::{available_hosts, host_from_id, HostId};
+        if available_hosts().contains(&HostId::Alsa) {
+            host_from_id(HostId::Alsa).unwrap_or_else(|_| cpal::default_host())
+        } else {
+            cpal::default_host()
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        cpal::default_host()
+    }
+}
+
+/// Detect whether PulseAudio is available on the system.
+/// This is a best-effort check based on the presence of the `pactl` command.
+fn detect_audio_sink() -> &'static str {
+    if std::process::Command::new("pactl").output().is_ok() {
+        "PulseAudio"
+    } else {
+        "ALSA"
+    }
+}
+
+
 /// Convert a 16-bit sample to a vector of bits represented as f32 values (0.0 or 1.0)
 pub fn i16_to_bits(val: i16) -> [f32; 16] {
     let mut bits = [0.0f32; 16];
@@ -110,7 +138,9 @@ pub async fn live_stream(
     stream: &MIMOStream,
     net: &mut SimpleNeuralNet,
 ) -> Result<(), Box<dyn Error>> {
-    let (_out_stream, handle) = rodio::OutputStream::try_default()?;
+    let output = select_audio_host().default_output_device().ok_or("No output device available")?;
+    println!("Detected audio backend: {}", detect_audio_sink());
+    let (_out_stream, handle) = rodio::OutputStream::try_from_device(&output)?;
     let sink = rodio::Sink::try_new(&handle)?;
     loop {
         let bits = stream.get_input_bits().await;
@@ -126,13 +156,15 @@ pub async fn live_stream(
 /// This function performs a very naive pitch shift by skipping every other sample
 /// and lowers the amplitude to roughly tone down the signal.
 pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn Error>> {
-    let host = cpal::default_host();
+    let host = select_audio_host();
+    println!("Detected audio backend: {}", detect_audio_sink());
     let input = host
         .default_input_device()
         .ok_or("No input device available")?;
     let config = input.default_input_config()?;
 
-    let (_out_stream, handle) = rodio::OutputStream::try_default()?;
+    let output = host.default_output_device().ok_or("No output device available")?;
+    let (_out_stream, handle) = rodio::OutputStream::try_from_device(&output)?;
     let sink = rodio::Sink::try_new(&handle)?;
 
     let sample_rate = config.sample_rate().0;
@@ -170,8 +202,7 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
                         sink.append(buffer);
                     }
                 },
-                err_fn,
-            )?
+                err_fn, None)?
         }
         cpal::SampleFormat::F32 => {
             let net_clone = net.clone();
@@ -203,8 +234,7 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
                         sink.append(buffer);
                     }
                 },
-                err_fn,
-            )?
+                err_fn, None)?
         }
         format => return Err(format!("Unsupported format {:?}", format).into()),
     };

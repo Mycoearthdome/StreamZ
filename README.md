@@ -9,6 +9,7 @@ The project now focuses on streaming voice data directly from your microphone. A
 - `MIMOStream` simulator generating bit vectors.
 - `SimpleNeuralNet` for quick experimentation.
 - Rust library `streamz-rs` for live microphone streaming through a small neural network.
+- Automatically selects the available PulseAudio or ALSA sink on Linux.
 - Example program demonstrating live streaming from the microphone.
 
 ## Requirements
@@ -30,6 +31,7 @@ cargo run --example live_stream --manifest-path streamz-rs/Cargo.toml
 ```
 
 The example listens to your microphone and plays the processed signal continuously.
+On Linux, the library automatically chooses PulseAudio or ALSA depending on what is available.
 
 ## License
 
