@@ -17,6 +17,7 @@ hound = "3"
 minimp3 = "0.5"
 indicatif = "0.17"
 rayon = "1.7"
+rustfft = "6"
 
 [[bin]]
 name = "StreamZ"

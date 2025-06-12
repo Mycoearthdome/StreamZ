@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::Path;
 use streamz_rs::{
     identify_speaker_with_threshold, load_audio_samples, pretrain_network, train_from_files,
-    SimpleNeuralNet, WINDOW_SIZE,
+    SimpleNeuralNet, FEATURE_SIZE,
 };
 use std::env;
 
@@ -13,7 +13,7 @@ const TRAIN_FILE_LIST: &str = "train_files.txt";
 /// Confidence threshold for assigning a sample to an existing speaker.
 /// Higher values make the program less eager to reuse a known speaker
 /// and instead create a new one when confidence is low.
-const DEFAULT_CONF_THRESHOLD: f32 = 1.0;
+const DEFAULT_CONF_THRESHOLD: f32 = 0.8;
 
 fn load_train_files(path: &str) -> Vec<(String, Option<usize>)> {
     if let Ok(content) = fs::read_to_string(path) {
@@ -96,7 +96,7 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("Failed to load model: {}", e);
-                SimpleNeuralNet::new(WINDOW_SIZE, 32, num_speakers.max(1))
+                SimpleNeuralNet::new(FEATURE_SIZE, 32, num_speakers.max(1))
             }
         }
     } else {
@@ -104,7 +104,7 @@ fn main() {
             num_speakers = 1;
             train_files[0].1 = Some(0);
         }
-        let mut n = SimpleNeuralNet::new(WINDOW_SIZE, 32, num_speakers.max(1));
+        let mut n = SimpleNeuralNet::new(FEATURE_SIZE, 32, num_speakers.max(1));
         let train_refs: Vec<(&str, usize)> = train_files
             .iter()
             .filter_map(|(p, c)| c.map(|cls| (p.as_str(), cls)))
