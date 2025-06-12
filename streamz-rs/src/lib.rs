@@ -1,9 +1,10 @@
-use hound::{WavReader, WavWriter};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ndarray::{Array1, Array2, Axis};
 use rand::Rng;
-use std::error::Error;
-use tokio::time::{sleep, Duration};
 use rodio;
+use std::error::Error;
+use std::sync::{Arc, Mutex};
+use tokio::time::{sleep, Duration};
 
 /// Convert a 16-bit sample to a vector of bits represented as f32 values (0.0 or 1.0)
 pub fn i16_to_bits(val: i16) -> [f32; 16] {
@@ -87,10 +88,14 @@ impl SimpleNeuralNet {
 
         let error = &out - &t;
         let delta_out = error * out_pre.mapv(|v| 1.0 - v.tanh().powi(2));
-        let grad_w2 = h.insert_axis(Axis(1)).dot(&delta_out.clone().insert_axis(Axis(0)));
+        let grad_w2 = h
+            .insert_axis(Axis(1))
+            .dot(&delta_out.clone().insert_axis(Axis(0)));
         let grad_b2 = delta_out.clone();
         let delta_h = delta_out.dot(&self.w2.t()) * h_pre.mapv(|v| 1.0 - v.tanh().powi(2));
-        let grad_w1 = x.insert_axis(Axis(1)).dot(&delta_h.clone().insert_axis(Axis(0)));
+        let grad_w1 = x
+            .insert_axis(Axis(1))
+            .dot(&delta_h.clone().insert_axis(Axis(0)));
         let grad_b1 = delta_h;
 
         self.w2 -= &(grad_w2 * lr);
@@ -100,25 +105,11 @@ impl SimpleNeuralNet {
     }
 }
 
-/// Process an input WAV file and write the processed samples to the output path
-pub fn process_wav(input: &str, output: &str, net: &SimpleNeuralNet) -> Result<(), Box<dyn Error>> {
-    let mut reader = WavReader::open(input)?;
-    let spec = reader.spec();
-    let mut writer = WavWriter::create(output, spec)?;
-
-    for sample in reader.samples::<i16>() {
-        let sample = sample?;
-        let bits = i16_to_bits(sample);
-        let out_bits = net.forward(&bits);
-        let out_sample = bits_to_i16(&out_bits);
-        writer.write_sample(out_sample)?;
-    }
-    writer.finalize()?;
-    Ok(())
-}
-
 /// Continuously read bits from a `MIMOStream`, train the network and play the output
-pub async fn live_stream(stream: &MIMOStream, net: &mut SimpleNeuralNet) -> Result<(), Box<dyn Error>> {
+pub async fn live_stream(
+    stream: &MIMOStream,
+    net: &mut SimpleNeuralNet,
+) -> Result<(), Box<dyn Error>> {
     let (_out_stream, handle) = rodio::OutputStream::try_default()?;
     let sink = rodio::Sink::try_new(&handle)?;
     loop {
@@ -128,6 +119,99 @@ pub async fn live_stream(stream: &MIMOStream, net: &mut SimpleNeuralNet) -> Resu
         let sample = bits_to_i16(&out_bits);
         let buffer = rodio::buffer::SamplesBuffer::new(1, 44100, vec![sample]);
         sink.append(buffer);
+    }
+}
+
+/// Capture audio from the default microphone, process it with the network and play the result.
+/// This function performs a very naive pitch shift by skipping every other sample
+/// and lowers the amplitude to roughly tone down the signal.
+pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn Error>> {
+    let host = cpal::default_host();
+    let input = host
+        .default_input_device()
+        .ok_or("No input device available")?;
+    let config = input.default_input_config()?;
+
+    let (_out_stream, handle) = rodio::OutputStream::try_default()?;
+    let sink = rodio::Sink::try_new(&handle)?;
+
+    let sample_rate = config.sample_rate().0;
+    let channels = config.channels() as u16;
+
+    let err_fn = |err| eprintln!("Stream error: {}", err);
+
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::I16 => {
+            let net_clone = net.clone();
+            input.build_input_stream(
+                &config.into(),
+                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    let mut output = Vec::with_capacity(data.len() / 2);
+                    let mut skip = false;
+                    for &sample in data {
+                        skip = !skip;
+                        if skip {
+                            continue;
+                        }
+                        let mut net = net_clone.lock().unwrap();
+                        let bits = i16_to_bits(sample);
+                        let out_bits = net.forward(&bits);
+                        net.train(&bits, &bits, 0.001);
+                        let mut out_sample = bits_to_i16(&out_bits);
+                        out_sample /= 2; // tone down
+                        output.push(out_sample);
+                    }
+                    if !output.is_empty() {
+                        let buffer = rodio::buffer::SamplesBuffer::new(
+                            channels,
+                            sample_rate,
+                            output.clone(),
+                        );
+                        sink.append(buffer);
+                    }
+                },
+                err_fn,
+            )?
+        }
+        cpal::SampleFormat::F32 => {
+            let net_clone = net.clone();
+            input.build_input_stream(
+                &config.into(),
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    let mut output = Vec::with_capacity(data.len() / 2);
+                    let mut skip = false;
+                    for &sample in data {
+                        skip = !skip;
+                        if skip {
+                            continue;
+                        }
+                        let int_sample = (sample * i16::MAX as f32) as i16;
+                        let mut net = net_clone.lock().unwrap();
+                        let bits = i16_to_bits(int_sample);
+                        let out_bits = net.forward(&bits);
+                        net.train(&bits, &bits, 0.001);
+                        let mut out_sample = bits_to_i16(&out_bits);
+                        out_sample /= 2; // tone down
+                        output.push(out_sample);
+                    }
+                    if !output.is_empty() {
+                        let buffer = rodio::buffer::SamplesBuffer::new(
+                            channels,
+                            sample_rate,
+                            output.clone(),
+                        );
+                        sink.append(buffer);
+                    }
+                },
+                err_fn,
+            )?
+        }
+        format => return Err(format!("Unsupported format {:?}", format).into()),
+    };
+
+    stream.play()?;
+    loop {
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
