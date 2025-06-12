@@ -121,10 +121,21 @@ fn main() {
                 } else if let Some(pred) =
                     identify_speaker_with_threshold(&net, &samples, CONF_THRESHOLD)
                 {
-                    *class = Some(pred);
-                    let sz = net.output_size();
-                    pretrain_network(&mut net, &samples, pred, sz, 30, 0.01);
-                    net.record_training_file(pred, path);
+                    if net.output_size() == 1 {
+                        // The network only knows one speaker so far. Treat this
+                        // as a new speaker instead of trusting the prediction.
+                        net.add_output_class();
+                        let new_label = net.output_size() - 1;
+                        *class = Some(new_label);
+                        let sz = net.output_size();
+                        pretrain_network(&mut net, &samples, new_label, sz, 30, 0.01);
+                        net.record_training_file(new_label, path);
+                    } else {
+                        *class = Some(pred);
+                        let sz = net.output_size();
+                        pretrain_network(&mut net, &samples, pred, sz, 30, 0.01);
+                        net.record_training_file(pred, path);
+                    }
                 } else {
                     net.add_output_class();
                     let new_label = net.output_size() - 1;
