@@ -1,18 +1,47 @@
-use std::sync::{Arc, Mutex};
-use std::path::Path;
-use streamz_rs::{live_mic_stream, SimpleNeuralNet};
+use std::io::{self, Write};
+use streamz_rs::{
+    identify_speaker, load_wav_samples, train_from_files, SimpleNeuralNet,
+};
+
+const TRAIN_FILES: [(&str, usize); 6] = [
+    ("examples/training_data/arctic_a0008.wav", 0),
+    ("examples/training_data/arctic_a0015.wav", 0),
+    ("examples/training_data/arctic_a0021.wav", 0),
+    ("examples/training_data/arctic_b0196.wav", 1),
+    ("examples/training_data/arctic_b0356.wav", 1),
+    ("examples/training_data/arctic_b0417.wav", 1),
+];
 
 const NUM_SPEAKERS: usize = 2;
 
 fn main() {
-    let model_path = "model.npz";
-    let net = if Path::new(model_path).exists() {
-        SimpleNeuralNet::load(model_path).unwrap_or_else(|_| SimpleNeuralNet::new(1, 8, NUM_SPEAKERS))
-    } else {
-        SimpleNeuralNet::new(1, 8, NUM_SPEAKERS)
+    let mut net = SimpleNeuralNet::new(1, 8, NUM_SPEAKERS);
+    if let Err(e) = train_from_files(&mut net, &TRAIN_FILES, NUM_SPEAKERS, 1, 0.001) {
+        eprintln!("Training failed: {}", e);
+        return;
+    }
+    println!("Training complete. Choose a speaker file to test:");
+    println!("[1] Speaker 1");
+    println!("[2] Speaker 2");
+    print!("> ");
+    io::stdout().flush().unwrap();
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_err() {
+        return;
+    }
+    let path = match input.trim() {
+        "1" => "examples/training_data/arctic_a0008.wav",
+        "2" => "examples/training_data/arctic_b0196.wav",
+        _ => {
+            println!("Invalid selection");
+            return;
+        }
     };
-    let net = Arc::new(Mutex::new(net));
-    if let Err(e) = live_mic_stream(net.clone(), NUM_SPEAKERS) {
-        eprintln!("Error: {}", e);
+    match load_wav_samples(path) {
+        Ok(samples) => {
+            let speaker = identify_speaker(&net, &samples);
+            println!("Model prediction: Speaker {}", speaker);
+        }
+        Err(e) => eprintln!("Failed to load test file: {}", e),
     }
 }
