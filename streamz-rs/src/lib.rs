@@ -11,7 +11,7 @@ use std::fs::File;
 use std::sync::{Arc, Mutex};
 use tokio::time::{sleep, Duration};
 
-const SAMPLE_RATE: u32 = 44100;
+const DEFAULT_SAMPLE_RATE: u32 = 44100;
 const CHANNELS: u16 = 1;
 pub const WINDOW_SIZE: usize = 256;
 
@@ -129,7 +129,7 @@ fn low_pass_filter(sample: f32, prev: &mut f32, alpha: f32) -> f32 {
 }
 
 /// Record a short voice sample from the default microphone and return raw `i16` samples.
-pub fn record_voice_sample(duration_secs: u64) -> Result<Vec<i16>, Box<dyn Error>> {
+pub fn record_voice_sample(duration_secs: u64, sample_rate: u32) -> Result<Vec<i16>, Box<dyn Error>> {
     use std::sync::{Arc, Mutex};
     let host = select_audio_host();
     let input = host
@@ -137,7 +137,7 @@ pub fn record_voice_sample(duration_secs: u64) -> Result<Vec<i16>, Box<dyn Error
         .ok_or("No input device available")?;
     let config = cpal::StreamConfig {
         channels: CHANNELS,
-        sample_rate: cpal::SampleRate(SAMPLE_RATE),
+        sample_rate: cpal::SampleRate(sample_rate),
         buffer_size: cpal::BufferSize::Default,
     };
 
@@ -219,6 +219,7 @@ pub fn train_from_files(
         "Detected training data: {} Hz, {} bits per sample",
         sample_rate, bits
     );
+    net.set_dataset_specs(sample_rate, bits);
     if bits != 16 {
         return Err("Only 16-bit WAV files supported".into());
     }
@@ -232,11 +233,11 @@ pub fn train_from_files(
 }
 
 /// Record audio for a sentence using a simple silence detector.
-pub fn record_sentence(prompt: &str, save_path: Option<&str>) -> Result<Vec<i16>, Box<dyn Error>> {
+pub fn record_sentence(prompt: &str, save_path: Option<&str>, sample_rate: u32) -> Result<Vec<i16>, Box<dyn Error>> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    const AMBIENT_SAMPLES: usize = 44100;
+    let ambient_samples = sample_rate as usize;
     const MAX_RECORD_SECS: usize = 8;
 
     println!("Please say: \"{}\"", prompt);
@@ -247,10 +248,10 @@ pub fn record_sentence(prompt: &str, save_path: Option<&str>) -> Result<Vec<i16>
         .ok_or("No input device available")?;
     let config = cpal::StreamConfig {
         channels: CHANNELS,
-        sample_rate: cpal::SampleRate(SAMPLE_RATE),
+        sample_rate: cpal::SampleRate(sample_rate),
         buffer_size: cpal::BufferSize::Default,
     };
-    let sample_rate = SAMPLE_RATE as usize;
+    let sample_rate = sample_rate as usize;
 
     let buffer = Arc::new(Mutex::new(Vec::new()));
     let buffer_cb = buffer.clone();
@@ -285,8 +286,8 @@ pub fn record_sentence(prompt: &str, save_path: Option<&str>) -> Result<Vec<i16>
                 let mut sum = ambient_sum_cb.lock().unwrap();
                 for &sample in data {
                     *sum += sample.abs() as f32;
-                    if ambient_count_cb.fetch_add(1, Ordering::Relaxed) >= AMBIENT_SAMPLES {
-                        *sum /= AMBIENT_SAMPLES as f32;
+                    if ambient_count_cb.fetch_add(1, Ordering::Relaxed) >= ambient_samples {
+                        *sum /= ambient_samples as f32;
                         has_baseline_cb.store(true, Ordering::Relaxed);
                         println!("Ambient noise level: {:.2}", *sum);
                         break;
@@ -341,7 +342,7 @@ pub fn record_sentence(prompt: &str, save_path: Option<&str>) -> Result<Vec<i16>
     if let Some(path) = save_path {
         let spec = hound::WavSpec {
             channels: CHANNELS,
-            sample_rate: SAMPLE_RATE,
+            sample_rate,
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
@@ -366,7 +367,7 @@ pub fn train_on_sentences(
     for _ in 0..cycles {
         for (idx, &(s, class)) in sentences.iter().enumerate() {
             let filename = format!("speaker{}_{}.wav", class, idx);
-            let samples = record_sentence(s, Some(&filename))?;
+            let samples = record_sentence(s, Some(&filename), net.sample_rate())?;
             pretrain_network(net, &samples, class, num_speakers, 1, 0.001);
         }
     }
@@ -404,6 +405,8 @@ pub struct SimpleNeuralNet {
     b1: Array1<f32>,
     w2: Array2<f32>,
     b2: Array1<f32>,
+    sample_rate: u32,
+    bits: u16,
 }
 
 impl SimpleNeuralNet {
@@ -417,11 +420,26 @@ impl SimpleNeuralNet {
             b1: Array1::zeros(hidden),
             w2: Array2::from_shape_fn((hidden, output), |_| rng.sample(dist)),
             b2: Array1::zeros(output),
+            sample_rate: DEFAULT_SAMPLE_RATE,
+            bits: 16,
         }
     }
 
     pub fn output_size(&self) -> usize {
         self.b2.len()
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    pub fn bits(&self) -> u16 {
+        self.bits
+    }
+
+    pub fn set_dataset_specs(&mut self, sample_rate: u32, bits: u16) {
+        self.sample_rate = sample_rate;
+        self.bits = bits;
     }
 
     /// Forward pass on a slice of f32 values
@@ -471,6 +489,8 @@ impl SimpleNeuralNet {
         npz.add_array("b1", &self.b1)?;
         npz.add_array("w2", &self.w2)?;
         npz.add_array("b2", &self.b2)?;
+        npz.add_array("sample_rate", &ndarray::arr1(&[self.sample_rate as i64]))?;
+        npz.add_array("bits", &ndarray::arr1(&[self.bits as i64]))?;
         npz.finish()?;
         Ok(())
     }
@@ -478,11 +498,15 @@ impl SimpleNeuralNet {
     pub fn load(path: &str) -> Result<Self, Box<dyn Error>> {
         let file = File::open(path)?;
         let mut npz = NpzReader::new(file)?;
+        let sample_rate: ndarray::Array1<i64> = npz.by_name("sample_rate.npy")?;
+        let bits: ndarray::Array1<i64> = npz.by_name("bits.npy")?;
         Ok(Self {
             w1: npz.by_name("w1.npy")?,
             b1: npz.by_name("b1.npy")?,
             w2: npz.by_name("w2.npy")?,
             b2: npz.by_name("b2.npy")?,
+            sample_rate: sample_rate[0] as u32,
+            bits: bits[0] as u16,
         })
     }
 }
@@ -523,7 +547,7 @@ pub async fn live_stream(
             .map(|v| if *v > 0.0 { 1.0 } else { 0.0 })
             .collect();
         let sample = bits_to_i16(&thresh);
-        let buffer = rodio::buffer::SamplesBuffer::new(1, 44100, vec![sample]);
+        let buffer = rodio::buffer::SamplesBuffer::new(1, net.sample_rate(), vec![sample]);
         sink.append(buffer);
     }
 }
@@ -541,7 +565,7 @@ pub fn live_mic_stream(
         .ok_or("No input device available")?;
     let config = cpal::StreamConfig {
         channels: CHANNELS,
-        sample_rate: cpal::SampleRate(SAMPLE_RATE),
+        sample_rate: cpal::SampleRate(net.lock().unwrap().sample_rate()),
         buffer_size: cpal::BufferSize::Default,
     };
 
@@ -564,7 +588,7 @@ pub fn live_mic_stream(
         net_lock.save("model.npz").ok();
     }
 
-    const AMBIENT_SAMPLES: usize = 44100; // about one second at 44.1kHz
+    let ambient_samples = net.lock().unwrap().sample_rate() as usize; // about one second
     let noise_mult = Arc::new(Mutex::new(1.2f32));
     let filter_prev = Arc::new(Mutex::new(0f32));
     let audio_buffer = Arc::new(Mutex::new(Vec::new()));
@@ -590,8 +614,8 @@ pub fn live_mic_stream(
                     let mut sum = ambient_sum_cb.lock().unwrap();
                     for &sample in data {
                         *sum += sample.abs() as f32;
-                        if ambient_count_cb.fetch_add(1, Ordering::Relaxed) >= AMBIENT_SAMPLES {
-                            *sum /= AMBIENT_SAMPLES as f32;
+                        if ambient_count_cb.fetch_add(1, Ordering::Relaxed) >= ambient_samples {
+                            *sum /= ambient_samples as f32;
                             has_baseline_cb.store(true, Ordering::Relaxed);
                             println!("Ambient noise level: {:.2}", *sum);
                             break;
