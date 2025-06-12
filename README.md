@@ -66,6 +66,10 @@ load the saved model automatically.
 During streaming you can press the Up and Down arrow keys to raise or lower the
 noise gate threshold. The current level is printed each time you adjust it.
 
+Training file paths are listed in `train_files.txt`. Entries may initially
+contain only a path. After a model is trained or loaded, running the program
+updates this file by appending the detected speaker number to each path.
+
 ## License
 
 This repository is released under the Creative Commons Zero v1.0 Universal license. See [LICENSE](LICENSE) for the full text.
