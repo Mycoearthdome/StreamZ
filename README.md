@@ -1,89 +1,46 @@
 # StreamZ
 
-StreamZ is a lightweight prototype for handling real time voice data and processing it with a neural network.  The current version focuses on speaker identification rather than audio reconstruction.
-
-## What the Program Achieves
-
-StreamZ demonstrates a very small audio classification pipeline built entirely in
-Rust. The application shows how short WAV or MP3 recordings can be used to train a
-feed‑forward neural network and how that network can then recognise a speaker in
-new audio samples. It packages the recorded training data and the resulting
-model weights so that the classifier can be reused in subsequent runs. While the
-network architecture is intentionally simple, the project provides a clear
-example of end‑to‑end speaker recognition without relying on large external
-libraries.
-
-## Project Goal
-
-The aim of this repository is to experiment with real‑time voice streaming and
-neural‑network based speaker recognition.  By building a small Rust
-application around a simple network, StreamZ demonstrates how microphone input
-can be captured, converted into training samples and then classified.  The code
-serves as a starting point for more advanced experiments in real‑time audio
-analysis or future work on speech reconstruction.
+StreamZ is a small Rust application that trains and executes a simple neural network to classify short MP3 (or WAV) recordings by speaker.  The project demonstrates how to read raw audio, convert it into feature windows and incrementally learn new speakers from a list of files.
 
 ## Features
 
-- `MIMOStream` simulator generating bit vectors.
-- `SimpleNeuralNet` with softmax output for multi speaker classification.
-- Samples are normalized to floating point values before neural processing.
-- Training samples can optionally be saved as `.wav` files for later use.
-- Model weights are stored in an `npz` file so the network can be reused between runs.
-- Noise gate threshold adjustable in real time using the Up and Down arrow keys.
-- MP3 input files are automatically decoded to WAV samples.
-- Unknown speakers can be detected using a confidence threshold.
-- The output layer is statically sized for up to 153 speakers.
+- Loads MP3 or 16‑bit WAV files and automatically converts them into normalised sample windows.
+- Feed‑forward neural network (`SimpleNeuralNet`) with one hidden layer and softmax output.
+- Training files and their assigned class numbers are stored in `train_files.txt` so that additional runs continue learning from where you left off.
+- Model weights, sample rate and other metadata are saved in `model.npz` for reuse between sessions.
+- Unlabelled files are compared against existing speakers using a confidence threshold; low confidence will create a new speaker entry automatically.
+- Works with recordings that use different sample rates and supports up to 153 speakers.
 
-## Requirements
+## Installation
 
-- Rust 1.70+ and Cargo.
-- On Linux, the `libasound2-dev` package is required to build the ALSA backend
-  used by the `rodio` and `cpal` crates. Install it via `apt`:
-
-```bash
-sudo apt-get install libasound2-dev
-```
-
-Build the program with:
+1. Install [Rust](https://www.rust-lang.org/tools/install) 1.70 or newer.
+2. Clone this repository and build the project:
 
 ```bash
 cd streamz-rs
 cargo build --release
 ```
 
+This produces the `StreamZ` binary in `target/release/`.
+
 ## Usage
 
-Run the live streaming program:
+Prepare `train_files.txt` with paths to your training clips.  Each line may optionally contain a comma and a numeric speaker index.  For example:
+
+```
+audio/alice1.mp3,0
+audio/bob1.mp3,1
+unlabelled.mp3
+```
+
+Run the classifier:
 
 ```bash
 ./target/release/StreamZ
 ```
 
-The program listens to your microphone and prints the predicted speaker for short
-windows of speech.  On first run you will be prompted to record a few example
-sentences for each speaker.  These samples are used to train the network and are
-written to `.wav` files along with an `model.npz` weight file.  Subsequent runs
-load the saved model automatically. Each speaker's training files are stored
-inside `model.npz` so the association between filenames and speakers can be
-reused later. The model file also stores each speaker's weights and biases
-individually using names like `w1`/`b1`, `w2`/`b2` and so on. The network
-preallocates space for 153 speakers and keeps track of how many are trained.
-Whenever a new speaker is recognised the next slot is initialised and saved
-immediately so training across multiple runs preserves every speaker's
-parameters.
-During streaming you can press the Up and Down arrow keys to raise or lower the
-noise gate threshold. The current level is printed each time you adjust it.
-
-Training file paths are listed in `train_files.txt`. Entries may initially
-contain only a path. After a model is trained or loaded, running the program
-updates this file by appending the detected speaker number to each path.
-
-Starting from v0.2 the training routine no longer requires all audio files to
-share the same sample rate. Every file is analysed and trained individually and
-the network updates its stored sample rate before processing the next file. This
-makes it possible to mix recordings taken at different rates in a single
-training session.
+During the run every file listed in `train_files.txt` is processed.  If a line lacks a speaker label the program will attempt to match it against previously learned voices and will append the chosen label to the file.  Newly discovered speakers are added to the model automatically.  The updated model and list of files are written back to disk at the end of the run.
 
 ## License
 
-This repository is released under the Creative Commons Zero v1.0 Universal license. See [LICENSE](LICENSE) for the full text.
+This project is released under the Creative Commons Zero v1.0 Universal license.  See [LICENSE](LICENSE) for details.
