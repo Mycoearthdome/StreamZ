@@ -6,3 +6,6 @@ edition = "2021"
 [dependencies]
 hound = "3.4"
 ndarray = "0.15"
+rand = "0.8"
+tokio = { version = "1", features = ["full"] }
+rodio = "0.17"
