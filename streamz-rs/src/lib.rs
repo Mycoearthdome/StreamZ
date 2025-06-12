@@ -166,17 +166,46 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
 
     let err_fn = |err| eprintln!("Stream error: {}", err);
 
+    const AMBIENT_SAMPLES: usize = 44100; // about one second at 44.1kHz
+    const THRESHOLD_MULT: f32 = 1.2; // anything above 20% of ambient noise is treated as voice
+
     let stream = match config.sample_format() {
         cpal::SampleFormat::I16 => {
+            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
             let net_clone = net.clone();
+            let ambient_sum = Arc::new(Mutex::new(0f32));
+            let ambient_count = Arc::new(AtomicUsize::new(0));
+            let has_baseline = Arc::new(AtomicBool::new(false));
+            let ambient_sum_cb = ambient_sum.clone();
+            let ambient_count_cb = ambient_count.clone();
+            let has_baseline_cb = has_baseline.clone();
+
             input.build_input_stream(
                 &config.into(),
                 move |data: &[i16], _: &cpal::InputCallbackInfo| {
                     let mut output = Vec::with_capacity(data.len() / 2);
                     let mut skip = false;
+                    if !has_baseline_cb.load(Ordering::Relaxed) {
+                        let mut sum = ambient_sum_cb.lock().unwrap();
+                        for &sample in data {
+                            *sum += sample.abs() as f32;
+                            if ambient_count_cb.fetch_add(1, Ordering::Relaxed) >= AMBIENT_SAMPLES {
+                                *sum /= AMBIENT_SAMPLES as f32;
+                                has_baseline_cb.store(true, Ordering::Relaxed);
+                                println!("Ambient noise level: {:.2}", *sum);
+                                break;
+                            }
+                        }
+                        return;
+                    }
+
+                    let baseline = *ambient_sum_cb.lock().unwrap();
                     for &sample in data {
                         skip = !skip;
                         if skip {
+                            continue;
+                        }
+                        if (sample.abs() as f32) < baseline * THRESHOLD_MULT {
                             continue;
                         }
                         let mut net = net_clone.lock().unwrap();
@@ -199,15 +228,41 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
                 err_fn, None)?
         }
         cpal::SampleFormat::F32 => {
+            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
             let net_clone = net.clone();
+            let ambient_sum = Arc::new(Mutex::new(0f32));
+            let ambient_count = Arc::new(AtomicUsize::new(0));
+            let has_baseline = Arc::new(AtomicBool::new(false));
+            let ambient_sum_cb = ambient_sum.clone();
+            let ambient_count_cb = ambient_count.clone();
+            let has_baseline_cb = has_baseline.clone();
+
             input.build_input_stream(
                 &config.into(),
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     let mut output = Vec::with_capacity(data.len() / 2);
                     let mut skip = false;
+                    if !has_baseline_cb.load(Ordering::Relaxed) {
+                        let mut sum = ambient_sum_cb.lock().unwrap();
+                        for &sample in data {
+                            *sum += sample.abs();
+                            if ambient_count_cb.fetch_add(1, Ordering::Relaxed) >= AMBIENT_SAMPLES {
+                                *sum /= AMBIENT_SAMPLES as f32;
+                                has_baseline_cb.store(true, Ordering::Relaxed);
+                                println!("Ambient noise level: {:.2}", *sum);
+                                break;
+                            }
+                        }
+                        return;
+                    }
+
+                    let baseline = *ambient_sum_cb.lock().unwrap();
                     for &sample in data {
                         skip = !skip;
                         if skip {
+                            continue;
+                        }
+                        if sample.abs() < baseline * THRESHOLD_MULT {
                             continue;
                         }
                         let int_sample = (sample * i16::MAX as f32) as i16;
