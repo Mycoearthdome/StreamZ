@@ -115,7 +115,12 @@ fn main() {
         let mut eval_set = labelled.split_off(labelled.len().saturating_sub(split));
         let train_refs: Vec<(&str, usize)> =
             labelled.iter().map(|(p, c)| (p.as_str(), *c)).collect();
-        let mut net = SimpleNeuralNet::new(FEATURE_SIZE, 128, count_speakers(&train_files).max(1));
+        let mut net = SimpleNeuralNet::new(
+            FEATURE_SIZE,
+            256,
+            128,
+            count_speakers(&train_files).max(1),
+        );
         if !train_refs.is_empty() {
             let out_sz = net.output_size();
             let _ = train_from_files(
@@ -160,7 +165,7 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("Failed to load model: {}", e);
-                SimpleNeuralNet::new(FEATURE_SIZE, 128, num_speakers.max(1))
+                SimpleNeuralNet::new(FEATURE_SIZE, 256, 128, num_speakers.max(1))
             }
         }
     } else {
@@ -168,7 +173,7 @@ fn main() {
             num_speakers = 1;
             train_files[0].1 = Some(0);
         }
-        let mut n = SimpleNeuralNet::new(FEATURE_SIZE, 128, num_speakers.max(1));
+        let mut n = SimpleNeuralNet::new(FEATURE_SIZE, 256, 128, num_speakers.max(1));
         let train_refs: Vec<(&str, usize)> = train_files
             .iter()
             .filter_map(|(p, c)| c.map(|cls| (p.as_str(), cls)))

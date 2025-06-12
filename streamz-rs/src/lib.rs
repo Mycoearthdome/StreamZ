@@ -274,12 +274,19 @@ pub fn train_from_files(
 /// Record each prompt sentence and train the network.
 /// The full list is cycled `cycles` times before returning.
 
-/// Simple feed-forward neural network operating on floating point vectors
+/// Simple feed-forward neural network operating on floating point vectors.
+///
+/// The original implementation used only a single hidden layer. To provide a
+/// slightly "deeper" network without pulling in heavyweight dependencies we now
+/// include a second hidden layer. This keeps the code self contained while
+/// giving the model a bit more capacity.
 pub struct SimpleNeuralNet {
     w1: Array2<f32>,
     b1: Array1<f32>,
     w2: Array2<f32>,
     b2: Array1<f32>,
+    w3: Array2<f32>,
+    b3: Array1<f32>,
     num_speakers: usize,
     /// List of training file paths for each speaker
     file_lists: Vec<Vec<String>>,
@@ -288,18 +295,23 @@ pub struct SimpleNeuralNet {
 }
 
 impl SimpleNeuralNet {
-    /// Create a new network with the given layer sizes
-    pub fn new(input: usize, hidden: usize, output: usize) -> Self {
+    /// Create a new network with the given layer sizes. Two hidden layers are
+    /// used to provide a slightly deeper model.
+    pub fn new(input: usize, hidden1: usize, hidden2: usize, output: usize) -> Self {
         use rand::distributions::Uniform;
         let mut rng = rand::thread_rng();
         let dist = Uniform::new(-0.5, 0.5);
-        let w2 = Array2::from_shape_fn((hidden, output), |_| rng.sample(dist));
-        let b2 = Array1::zeros(output);
+        let w2 = Array2::from_shape_fn((hidden1, hidden2), |_| rng.sample(dist));
+        let b2 = Array1::zeros(hidden2);
+        let w3 = Array2::from_shape_fn((hidden2, output), |_| rng.sample(dist));
+        let b3 = Array1::zeros(output);
         Self {
-            w1: Array2::from_shape_fn((input, hidden), |_| rng.sample(dist)),
-            b1: Array1::zeros(hidden),
+            w1: Array2::from_shape_fn((input, hidden1), |_| rng.sample(dist)),
+            b1: Array1::zeros(hidden1),
             w2,
             b2,
+            w3,
+            b3,
             num_speakers: output,
             file_lists: vec![Vec::new(); output],
             sample_rate: DEFAULT_SAMPLE_RATE,
@@ -316,22 +328,22 @@ impl SimpleNeuralNet {
         use rand::distributions::Uniform;
         let mut rng = rand::thread_rng();
         let dist = Uniform::new(-0.5, 0.5);
-        let hidden = self.w2.nrows();
-        let mut new_w2 = Array2::<f32>::zeros((hidden, self.num_speakers + 1));
+        let hidden = self.w3.nrows();
+        let mut new_w3 = Array2::<f32>::zeros((hidden, self.num_speakers + 1));
         for i in 0..self.num_speakers {
-            let col = self.w2.column(i).to_owned();
-            new_w2.column_mut(i).assign(&col);
+            let col = self.w3.column(i).to_owned();
+            new_w3.column_mut(i).assign(&col);
         }
         for r in 0..hidden {
-            new_w2[[r, self.num_speakers]] = rng.sample(dist);
+            new_w3[[r, self.num_speakers]] = rng.sample(dist);
         }
-        self.w2 = new_w2;
+        self.w3 = new_w3;
 
-        let mut new_b2 = Array1::<f32>::zeros(self.num_speakers + 1);
+        let mut new_b3 = Array1::<f32>::zeros(self.num_speakers + 1);
         for i in 0..self.num_speakers {
-            new_b2[i] = self.b2[i];
+            new_b3[i] = self.b3[i];
         }
-        self.b2 = new_b2;
+        self.b3 = new_b3;
         if self.file_lists.len() <= self.num_speakers {
             self.file_lists.push(Vec::new());
         }
@@ -356,10 +368,11 @@ impl SimpleNeuralNet {
     /// Forward pass on a slice of f32 values
     pub fn forward(&self, bits: &[f32]) -> Vec<f32> {
         let x = Array1::from_vec(bits.to_vec());
-        let h = (x.dot(&self.w1) + &self.b1).mapv(|v| v.tanh());
-        let w2 = self.w2.slice(s![.., ..self.num_speakers]);
-        let b2 = self.b2.slice(s![..self.num_speakers]);
-        let out = h.dot(&w2) + &b2;
+        let h1 = (x.dot(&self.w1) + &self.b1).mapv(|v| v.tanh());
+        let h2 = (h1.dot(&self.w2) + &self.b2).mapv(|v| v.tanh());
+        let w3 = self.w3.slice(s![.., ..self.num_speakers]);
+        let b3 = self.b3.slice(s![..self.num_speakers]);
+        let out = h2.dot(&w3) + &b3;
         let max = out.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let exp = out.mapv(|v| (v - max).exp());
         let sum = exp.sum();
@@ -369,48 +382,58 @@ impl SimpleNeuralNet {
     /// Extract the hidden layer activation as an embedding vector
     pub fn embed(&self, bits: &[f32]) -> Vec<f32> {
         let x = Array1::from_vec(bits.to_vec());
-        let h = (x.dot(&self.w1) + &self.b1).mapv(|v| v.tanh());
-        h.to_vec()
+        let h1 = (x.dot(&self.w1) + &self.b1).mapv(|v| v.tanh());
+        let h2 = (h1.dot(&self.w2) + &self.b2).mapv(|v| v.tanh());
+        h2.to_vec()
     }
 
     /// Return the size of the embedding vector
     pub fn embedding_size(&self) -> usize {
-        self.w1.ncols()
+        self.w2.ncols()
     }
 
     /// Single-step training using cross entropy loss
     pub fn train(&mut self, bits: &[f32], target: &[f32], lr: f32) {
         let x = Array1::from_vec(bits.to_vec());
         let t = Array1::from_vec(target.to_vec());
-        let h_pre = x.dot(&self.w1) + &self.b1;
-        let h = h_pre.mapv(|v| v.tanh());
-        let w2 = self.w2.slice(s![.., ..self.num_speakers]);
-        let b2 = self.b2.slice(s![..self.num_speakers]);
-        let out_pre = h.dot(&w2) + &b2;
+        let h1_pre = x.dot(&self.w1) + &self.b1;
+        let h1 = h1_pre.mapv(|v| v.tanh());
+        let h2_pre = h1.dot(&self.w2) + &self.b2;
+        let h2 = h2_pre.mapv(|v| v.tanh());
+        let w3 = self.w3.slice(s![.., ..self.num_speakers]);
+        let b3 = self.b3.slice(s![..self.num_speakers]);
+        let out_pre = h2.dot(&w3) + &b3;
         let max = out_pre.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let exp = out_pre.mapv(|v| (v - max).exp());
         let sum = exp.sum();
         let out = exp.mapv(|v| v / sum);
 
         let delta_out = &out - &t;
-        let grad_w2 = h
+        let grad_w3 = h2
             .insert_axis(Axis(1))
             .dot(&delta_out.clone().insert_axis(Axis(0)));
-        let grad_b2 = delta_out.clone();
-        let delta_h = delta_out.dot(&w2.t()) * h_pre.mapv(|v| 1.0 - v.tanh().powi(2));
+        let grad_b3 = delta_out.clone();
+        let delta_h2 = delta_out.dot(&w3.t()) * h2_pre.mapv(|v| 1.0 - v.tanh().powi(2));
+        let grad_w2 = h1
+            .insert_axis(Axis(1))
+            .dot(&delta_h2.clone().insert_axis(Axis(0)));
+        let grad_b2 = delta_h2.clone();
+        let delta_h1 = delta_h2.dot(&self.w2.t()) * h1_pre.mapv(|v| 1.0 - v.tanh().powi(2));
         let grad_w1 = x
             .insert_axis(Axis(1))
-            .dot(&delta_h.clone().insert_axis(Axis(0)));
-        let grad_b1 = delta_h;
+            .dot(&delta_h1.clone().insert_axis(Axis(0)));
+        let grad_b1 = delta_h1;
 
         {
-            let mut w2_mut = self.w2.slice_mut(s![.., ..self.num_speakers]);
-            w2_mut -= &(grad_w2 * lr);
+            let mut w3_mut = self.w3.slice_mut(s![.., ..self.num_speakers]);
+            w3_mut -= &(grad_w3 * lr);
         }
         {
-            let mut b2_mut = self.b2.slice_mut(s![..self.num_speakers]);
-            b2_mut -= &(grad_b2 * lr);
+            let mut b3_mut = self.b3.slice_mut(s![..self.num_speakers]);
+            b3_mut -= &(grad_b3 * lr);
         }
+        self.w2 -= &(grad_w2 * lr);
+        self.b2 -= &(grad_b2 * lr);
         self.w1 -= &(grad_w1 * lr);
         self.b1 -= &(grad_b1 * lr);
     }
@@ -420,14 +443,16 @@ impl SimpleNeuralNet {
         let mut npz = NpzWriter::new(file);
         npz.add_array("w1", &self.w1)?;
         npz.add_array("b1", &self.b1)?;
+        npz.add_array("w2", &self.w2)?;
+        npz.add_array("b2", &self.b2)?;
         npz.add_array("sample_rate", &ndarray::arr1(&[self.sample_rate as i64]))?;
         npz.add_array("bits", &ndarray::arr1(&[self.bits as i64]))?;
         npz.add_array("num_speakers", &ndarray::arr1(&[self.num_speakers as i64]))?;
         for idx in 0..self.num_speakers {
-            let w_name = format!("w2_{}", idx + 1);
-            let b_name = format!("b2_{}", idx + 1);
-            let w_col = self.w2.column(idx).to_owned();
-            let b_val = Array1::<f32>::from_vec(vec![self.b2[idx]]);
+            let w_name = format!("w3_{}", idx + 1);
+            let b_name = format!("b3_{}", idx + 1);
+            let w_col = self.w3.column(idx).to_owned();
+            let b_val = Array1::<f32>::from_vec(vec![self.b3[idx]]);
             npz.add_array(&w_name, &w_col)?;
             npz.add_array(&b_name, &b_val)?;
         }
@@ -448,6 +473,8 @@ impl SimpleNeuralNet {
         let bits: ndarray::Array1<i64> = npz.by_name("bits")?;
         let w1: Array2<f32> = npz.by_name("w1")?;
         let b1: Array1<f32> = npz.by_name("b1")?;
+        let w2: Array2<f32> = npz.by_name("w2")?;
+        let b2: Array1<f32> = npz.by_name("b2")?;
         let num_speakers_arr: Option<ndarray::Array1<i64>> =
             if names.iter().any(|n| n == "num_speakers.npy") {
                 Some(npz.by_name("num_speakers")?)
@@ -459,8 +486,8 @@ impl SimpleNeuralNet {
         let mut biases = Vec::new();
         let mut idx = 1;
         loop {
-            let w_name = format!("w2_{}", idx);
-            let b_name = format!("b2_{}", idx);
+            let w_name = format!("w3_{}", idx);
+            let b_name = format!("b3_{}", idx);
             let entry_w = format!("{}.npy", w_name);
             let entry_b = format!("{}.npy", b_name);
             if names.iter().any(|n| n == &entry_w) && names.iter().any(|n| n == &entry_b) {
@@ -475,23 +502,23 @@ impl SimpleNeuralNet {
         }
 
         let mut num_outputs = columns.len();
-        let hidden = w1.ncols();
-        let mut w2 = Array2::<f32>::zeros((hidden, num_outputs.max(1)));
-        let mut b2 = Array1::<f32>::zeros(num_outputs.max(1));
+        let hidden2 = w2.ncols();
+        let mut w3 = Array2::<f32>::zeros((hidden2, num_outputs.max(1)));
+        let mut b3 = Array1::<f32>::zeros(num_outputs.max(1));
         if !columns.is_empty() {
             for (i, col) in columns.into_iter().enumerate() {
-                w2.column_mut(i).assign(&col);
+                w3.column_mut(i).assign(&col);
             }
             for (i, val) in biases.into_iter().enumerate() {
-                b2[i] = val;
+                b3[i] = val;
             }
-        } else if names.iter().any(|n| n == "w2.npy") {
-            let w2_raw: Array2<f32> = npz.by_name("w2")?;
-            let b2_raw: Array1<f32> = npz.by_name("b2")?;
-            num_outputs = b2_raw.len();
+        } else if names.iter().any(|n| n == "w3.npy") {
+            let w3_raw: Array2<f32> = npz.by_name("w3")?;
+            let b3_raw: Array1<f32> = npz.by_name("b3")?;
+            num_outputs = b3_raw.len();
             for i in 0..num_outputs {
-                w2.column_mut(i).assign(&w2_raw.column(i));
-                b2[i] = b2_raw[i];
+                w3.column_mut(i).assign(&w3_raw.column(i));
+                b3[i] = b3_raw[i];
             }
         }
         let outputs = if let Some(arr) = num_speakers_arr {
@@ -525,6 +552,8 @@ impl SimpleNeuralNet {
             b1,
             w2,
             b2,
+            w3,
+            b3,
             num_speakers: outputs,
             file_lists,
             sample_rate: sample_rate[0] as u32,
