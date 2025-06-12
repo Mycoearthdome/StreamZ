@@ -188,10 +188,18 @@ pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
 }
 
 /// Record and train the network on a list of prompt sentences.
-pub fn train_on_sentences(net: &mut SimpleNeuralNet, sentences: &[&str]) -> Result<(), Box<dyn Error>> {
-    for &s in sentences {
-        let samples = record_sentence(s)?;
-        pretrain_network(net, &samples, 1, 0.001);
+/// Record each prompt sentence and train the network.
+/// The full list is cycled `cycles` times before returning.
+pub fn train_on_sentences(
+    net: &mut SimpleNeuralNet,
+    sentences: &[&str],
+    cycles: usize,
+) -> Result<(), Box<dyn Error>> {
+    for _ in 0..cycles {
+        for &s in sentences {
+            let samples = record_sentence(s)?;
+            pretrain_network(net, &samples, 1, 0.001);
+        }
     }
     println!("Sentence training complete.");
     Ok(())
@@ -351,9 +359,11 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
         "Different accents often affect vowel shaping and syllable timing.",
     ];
 
+    const SENTENCE_CYCLES: usize = 1;
+
     {
         let mut net_lock = net.lock().unwrap();
-        train_on_sentences(&mut net_lock, &PROMPTS)?;
+        train_on_sentences(&mut net_lock, &PROMPTS, SENTENCE_CYCLES)?;
     }
 
     const AMBIENT_SAMPLES: usize = 44100; // about one second at 44.1kHz
