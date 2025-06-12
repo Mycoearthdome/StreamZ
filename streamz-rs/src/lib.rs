@@ -365,6 +365,18 @@ impl SimpleNeuralNet {
         (exp / sum).to_vec()
     }
 
+    /// Extract the hidden layer activation as an embedding vector
+    pub fn embed(&self, bits: &[f32]) -> Vec<f32> {
+        let x = Array1::from_vec(bits.to_vec());
+        let h = (x.dot(&self.w1) + &self.b1).mapv(|v| v.tanh());
+        h.to_vec()
+    }
+
+    /// Return the size of the embedding vector
+    pub fn embedding_size(&self) -> usize {
+        self.w1.ncols()
+    }
+
     /// Single-step training using cross entropy loss
     pub fn train(&mut self, bits: &[f32], target: &[f32], lr: f32) {
         let x = Array1::from_vec(bits.to_vec());
@@ -600,4 +612,35 @@ pub fn identify_speaker_list(net: &SimpleNeuralNet, sample: &[i16], threshold: f
         .collect();
     pairs.sort_by(|a, b| b.1.cmp(&a.1));
     pairs.into_iter().map(|(i, _)| i).collect()
+}
+
+/// Compute the average embedding vector for an audio sample
+pub fn extract_embedding(net: &SimpleNeuralNet, sample: &[i16]) -> Vec<f32> {
+    let mut sum = vec![0.0f32; net.embedding_size()];
+    let mut count = 0f32;
+    for win in window_samples(sample) {
+        let emb = net.embed(&win);
+        for (i, v) in emb.iter().enumerate() {
+            sum[i] += *v;
+        }
+        count += 1.0;
+    }
+    if count > 0.0 {
+        for v in &mut sum {
+            *v /= count;
+        }
+    }
+    sum
+}
+
+/// Calculate cosine similarity between two embedding vectors
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a = a.iter().map(|v| v * v).sum::<f32>().sqrt();
+    let norm_b = b.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        0.0
+    } else {
+        dot / (norm_a * norm_b)
+    }
 }
