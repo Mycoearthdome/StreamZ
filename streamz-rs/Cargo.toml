@@ -10,7 +10,7 @@ tokio = { version = "1", features = ["full"] }
 # Audio crates removed for Canvas compatibility
 # rodio = "0.17"
 # cpal = "0.15"
-# crossterm = "0.27"
+crossterm = "0.27"
 ndarray-npy = "0.8"
 hound = "3"
 
