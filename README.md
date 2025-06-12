@@ -70,6 +70,12 @@ Training file paths are listed in `train_files.txt`. Entries may initially
 contain only a path. After a model is trained or loaded, running the program
 updates this file by appending the detected speaker number to each path.
 
+Starting from v0.2 the training routine no longer requires all audio files to
+share the same sample rate. Every file is analysed and trained individually and
+the network updates its stored sample rate before processing the next file. This
+makes it possible to mix recordings taken at different rates in a single
+training session.
+
 ## License
 
 This repository is released under the Creative Commons Zero v1.0 Universal license. See [LICENSE](LICENSE) for the full text.
