@@ -3,7 +3,7 @@
 // use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use hound;
 use minimp3::{Decoder, Error as Mp3Error, Frame};
-use ndarray::{Array1, Array2, Axis, s};
+use ndarray::{s, Array1, Array2, Axis};
 use ndarray_npy::{NpzReader, NpzWriter};
 use rand::Rng;
 // use rodio;
@@ -130,24 +130,38 @@ pub fn audio_metadata(path: &str) -> Result<(u32, u16), Box<dyn Error>> {
 pub fn train_from_files(
     net: &mut SimpleNeuralNet,
     files: &[(&str, usize)],
+    total_files: usize,
     num_speakers: usize,
     epochs: usize,
     lr: f32,
 ) -> Result<(), Box<dyn Error>> {
-    println!("Training on {} files individually", files.len());
+    println!("Training on {} files individually", total_files);
     for &(path, class) in files {
-        let (sample_rate, bits) = audio_metadata(path)?;
+        println!("Processing {}", path);
+        let (sample_rate, bits) = match audio_metadata(path) {
+            Ok(meta) => meta,
+            Err(e) => {
+                eprintln!("Skipping {}: {}", path, e);
+                continue;
+            }
+        };
         println!(
             "Training on {} -> {} Hz, {} bits per sample",
             path, sample_rate, bits
         );
         net.set_dataset_specs(sample_rate, bits);
         if bits != 16 {
-            return Err("Only 16-bit audio supported".into());
+            eprintln!("Skipping {}: Only 16-bit audio supported", path);
+            continue;
         }
         for _ in 0..epochs {
-            let samples = load_audio_samples(path)?;
-            pretrain_network(net, &samples, class, num_speakers, 1, lr);
+            match load_audio_samples(path) {
+                Ok(samples) => pretrain_network(net, &samples, class, num_speakers, 1, lr),
+                Err(e) => {
+                    eprintln!("Skipping {}: {}", path, e);
+                    break;
+                }
+            }
         }
     }
     Ok(())
