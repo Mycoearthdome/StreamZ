@@ -12,7 +12,7 @@ const TRAIN_FILE_LIST: &str = "train_files.txt";
 /// Confidence threshold for assigning a sample to an existing speaker.
 /// Higher values make the program less eager to reuse a known speaker
 /// and instead create a new one when confidence is low.
-const CONF_THRESHOLD: f32 = 0.8;
+const CONF_THRESHOLD: f32 = 1.0;
 
 fn load_train_files(path: &str) -> Vec<(String, Option<usize>)> {
     if let Ok(content) = fs::read_to_string(path) {
