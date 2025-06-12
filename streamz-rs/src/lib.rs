@@ -153,6 +153,9 @@ pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
     let finished_cb = finished.clone();
     let sample_count_cb = sample_count.clone();
 
+    let filter_prev = Arc::new(Mutex::new(0f32));
+    let filter_prev_cb = filter_prev.clone();
+
     let err_fn = |err| eprintln!("Stream error: {}", err);
 
     let stream = input.build_input_stream(
@@ -362,6 +365,7 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
         .ok_or("No output device available")?;
     let (_out_stream, handle) = rodio::OutputStream::try_from_device(&output)?;
     let sink = rodio::Sink::try_new(&handle)?;
+    let sink_cb = sink.clone();
 
     let sample_rate = SAMPLE_RATE;
     let channels = CHANNELS;
@@ -451,7 +455,7 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
                 if !output.is_empty() {
                     let buffer =
                         rodio::buffer::SamplesBuffer::new(channels, sample_rate, output.clone());
-                    sink.append(buffer);
+                    sink_cb.append(buffer);
                 }
             },
             err_fn,
