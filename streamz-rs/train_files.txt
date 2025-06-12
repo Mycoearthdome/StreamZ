@@ -1,0 +1,6 @@
+examples/training_data/arctic_a0008.wav,0
+examples/training_data/arctic_a0015.wav,0
+examples/training_data/arctic_a0021.wav,0
+examples/training_data/arctic_b0196.wav,1
+examples/training_data/arctic_b0356.wav,1
+examples/training_data/arctic_b0417.wav,1
