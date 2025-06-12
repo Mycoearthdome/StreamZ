@@ -1,6 +1,6 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossterm::event::{self, Event, KeyCode};
-use crossterm::terminal::enable_raw_mode;
+use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
 use ndarray::{Array1, Array2, Axis};
 use rand::Rng;
 use rodio;
@@ -63,6 +63,13 @@ fn subtract_baseline(sample: i16, baseline: f32) -> i16 {
     result.clamp(i16::MIN as f32, i16::MAX as f32) as i16
 }
 
+/// Apply a simple low-pass filter to reduce high frequency noise.
+fn low_pass_filter(sample: f32, prev: &mut f32, alpha: f32) -> f32 {
+    let filtered = alpha * sample + (1.0 - alpha) * *prev;
+    *prev = filtered;
+    filtered
+}
+
 /// Record a short voice sample from the default microphone and return raw `i16` samples.
 pub fn record_voice_sample(duration_secs: u64) -> Result<Vec<i16>, Box<dyn Error>> {
     use std::sync::{Arc, Mutex};
@@ -79,7 +86,6 @@ pub fn record_voice_sample(duration_secs: u64) -> Result<Vec<i16>, Box<dyn Error
     let buffer = Arc::new(Mutex::new(Vec::new()));
     let buffer_cb = buffer.clone();
     let err_fn = |err| eprintln!("Stream error: {}", err);
-
     let stream = input.build_input_stream(
         &config,
         move |data: &[i16], _: &cpal::InputCallbackInfo| {
@@ -168,26 +174,31 @@ pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
 
             let baseline = *ambient_sum_cb.lock().unwrap();
             for &sample in data {
-                let processed = subtract_baseline(sample, baseline);
+                let processed = subtract_baseline(sample, baseline) as f32;
+                let filtered = {
+                    let mut prev = filter_prev_cb.lock().unwrap();
+                    low_pass_filter(processed, &mut *prev, 0.05)
+                };
+                let processed_i16 = filtered as i16;
                 if !started_cb.load(Ordering::Relaxed) {
-                    if (processed.abs() as f32) > baseline * 0.3 {
+                    if filtered.abs() > baseline * 0.3 {
                         started_cb.store(true, Ordering::Relaxed);
                         sample_count_cb.store(0, Ordering::Relaxed);
-                        buffer_cb.lock().unwrap().push(processed);
+                        buffer_cb.lock().unwrap().push(processed_i16);
                     }
                     continue;
                 }
 
-                if (processed.abs() as f32) < baseline * 0.3 {
+                if filtered.abs() < baseline * 0.3 {
                     continue;
                 }
-                buffer_cb.lock().unwrap().push(processed);
+                buffer_cb.lock().unwrap().push(processed_i16);
                 sample_count_cb.fetch_add(1, Ordering::Relaxed);
                 if sample_count_cb.load(Ordering::Relaxed) > sample_rate * MAX_RECORD_SECS {
                     finished_cb.store(true, Ordering::Relaxed);
                     break;
                 }
-                if (processed.abs() as f32) > baseline * 0.3 {
+                if filtered.abs() > baseline * 0.3 {
                     silence_count_cb.store(0, Ordering::Relaxed);
                 } else {
                     let c = silence_count_cb.fetch_add(1, Ordering::Relaxed) + 1;
@@ -386,38 +397,13 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
 
     const AMBIENT_SAMPLES: usize = 44100; // about one second at 44.1kHz
     let noise_mult = Arc::new(Mutex::new(1.2f32));
-
-    // Spawn thread to listen for arrow key input and adjust noise gate
-    {
-        let noise_mult_ctrl = noise_mult.clone();
-        std::thread::spawn(move || {
-            enable_raw_mode().ok();
-            loop {
-                if event::poll(Duration::from_millis(100)).unwrap() {
-                    if let Event::Key(k) = event::read().unwrap() {
-                        match k.code {
-                            KeyCode::Up => {
-                                let mut m = noise_mult_ctrl.lock().unwrap();
-                                *m += 0.1;
-                                println!("Noise gate multiplier: {:.2}", *m);
-                            }
-                            KeyCode::Down => {
-                                let mut m = noise_mult_ctrl.lock().unwrap();
-                                *m = (*m - 0.1).max(0.0);
-                                println!("Noise gate multiplier: {:.2}", *m);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        });
-    }
+    let filter_prev = Arc::new(Mutex::new(0f32));
 
     let stream = {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         let net_clone = net.clone();
         let noise_mult_cb = noise_mult.clone();
+        let filter_prev_cb = filter_prev.clone();
         let ambient_sum = Arc::new(Mutex::new(0f32));
         let ambient_count = Arc::new(AtomicUsize::new(0));
         let has_baseline = Arc::new(AtomicBool::new(false));
@@ -445,13 +431,18 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
 
                 let baseline = *ambient_sum_cb.lock().unwrap();
                 for &sample in data {
-                    let processed = subtract_baseline(sample, baseline);
+                    let processed = subtract_baseline(sample, baseline) as f32;
+                    let filtered = {
+                        let mut prev = filter_prev_cb.lock().unwrap();
+                        low_pass_filter(processed, &mut *prev, 0.05)
+                    };
                     let mult = *noise_mult_cb.lock().unwrap();
-                    if (processed.abs() as f32) < baseline * mult {
+                    if filtered.abs() < baseline * mult {
                         continue;
                     }
+                    let processed_i16 = filtered as i16;
                     let mut net = net_clone.lock().unwrap();
-                    let bits = i16_to_bits(processed);
+                    let bits = i16_to_bits(processed_i16);
                     let out_bits = net.forward(&bits);
                     net.train(&bits, &bits, 0.001);
                     let out_sample = bits_to_i16(&out_bits);
@@ -469,9 +460,33 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
     };
 
     stream.play()?;
+    enable_raw_mode()?;
     loop {
-        std::thread::sleep(Duration::from_millis(100));
+        if event::poll(Duration::from_millis(100))? {
+            if let Event::Key(k) = event::read()? {
+                match k.code {
+                    KeyCode::Up => {
+                        let mut m = noise_mult.lock().unwrap();
+                        *m += 0.1;
+                        println!("Noise gate multiplier: {:.2}", *m);
+                    }
+                    KeyCode::Down => {
+                        let mut m = noise_mult.lock().unwrap();
+                        *m = (*m - 0.1).max(0.0);
+                        println!("Noise gate multiplier: {:.2}", *m);
+                    }
+                    KeyCode::Esc => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
+    disable_raw_mode()?;
+    drop(stream);
+    sink.sleep_until_end();
+    Ok(())
 }
 
 #[cfg(test)]
