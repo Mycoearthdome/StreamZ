@@ -5,6 +5,7 @@ use rodio;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 use crossterm::event::{self, Event, KeyCode};
+use crossterm::terminal::enable_raw_mode;
 use tokio::time::{sleep, Duration};
 
 #[allow(dead_code)]
@@ -97,6 +98,150 @@ pub fn pretrain_network(net: &mut SimpleNeuralNet, samples: &[i16], epochs: usiz
             net.train(&bits, &bits, lr);
         }
     }
+}
+
+/// Record audio for a sentence using a simple silence detector.
+pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
+    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    const AMBIENT_SAMPLES: usize = 44100;
+
+    println!("Please say: \"{}\"", prompt);
+
+    let host = select_audio_host();
+    let input = host
+        .default_input_device()
+        .ok_or("No input device available")?;
+    let config = input.default_input_config()?;
+    let sample_rate = config.sample_rate().0 as usize;
+
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let buffer_cb = buffer.clone();
+
+    let ambient_sum = Arc::new(Mutex::new(0f32));
+    let ambient_count = Arc::new(AtomicUsize::new(0));
+    let has_baseline = Arc::new(AtomicBool::new(false));
+
+    let started = Arc::new(AtomicBool::new(false));
+    let silence_count = Arc::new(AtomicUsize::new(0));
+    let finished = Arc::new(AtomicBool::new(false));
+
+    let ambient_sum_cb = ambient_sum.clone();
+    let ambient_count_cb = ambient_count.clone();
+    let has_baseline_cb = has_baseline.clone();
+    let started_cb = started.clone();
+    let silence_count_cb = silence_count.clone();
+    let finished_cb = finished.clone();
+
+    let err_fn = |err| eprintln!("Stream error: {}", err);
+
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::I16 => input.build_input_stream(
+            &config.into(),
+            move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                if !has_baseline_cb.load(Ordering::Relaxed) {
+                    let mut sum = ambient_sum_cb.lock().unwrap();
+                    for &sample in data {
+                        *sum += sample.abs() as f32;
+                        if ambient_count_cb.fetch_add(1, Ordering::Relaxed) >= AMBIENT_SAMPLES {
+                            *sum /= AMBIENT_SAMPLES as f32;
+                            has_baseline_cb.store(true, Ordering::Relaxed);
+                            println!("Ambient noise level: {:.2}", *sum);
+                            break;
+                        }
+                    }
+                    return;
+                }
+
+                let baseline = *ambient_sum_cb.lock().unwrap();
+                for &sample in data {
+                    if !started_cb.load(Ordering::Relaxed) {
+                        if (sample.abs() as f32) > baseline * 1.2 {
+                            started_cb.store(true, Ordering::Relaxed);
+                            buffer_cb.lock().unwrap().push(sample);
+                        }
+                        continue;
+                    }
+
+                    buffer_cb.lock().unwrap().push(sample);
+                    if (sample.abs() as f32) > baseline * 1.2 {
+                        silence_count_cb.store(0, Ordering::Relaxed);
+                    } else {
+                        let c = silence_count_cb.fetch_add(1, Ordering::Relaxed) + 1;
+                        if c > sample_rate / 4 {
+                            finished_cb.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                }
+            },
+            err_fn,
+            None,
+        )?,
+        cpal::SampleFormat::F32 => input.build_input_stream(
+            &config.into(),
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                if !has_baseline_cb.load(Ordering::Relaxed) {
+                    let mut sum = ambient_sum_cb.lock().unwrap();
+                    for &sample in data {
+                        *sum += sample.abs();
+                        if ambient_count_cb.fetch_add(1, Ordering::Relaxed) >= AMBIENT_SAMPLES {
+                            *sum /= AMBIENT_SAMPLES as f32;
+                            has_baseline_cb.store(true, Ordering::Relaxed);
+                            println!("Ambient noise level: {:.2}", *sum);
+                            break;
+                        }
+                    }
+                    return;
+                }
+
+                let baseline = *ambient_sum_cb.lock().unwrap();
+                for &sample in data {
+                    let int_sample = (sample * i16::MAX as f32) as i16;
+                    if !started_cb.load(Ordering::Relaxed) {
+                        if sample.abs() > baseline * 1.2 {
+                            started_cb.store(true, Ordering::Relaxed);
+                            buffer_cb.lock().unwrap().push(int_sample);
+                        }
+                        continue;
+                    }
+
+                    buffer_cb.lock().unwrap().push(int_sample);
+                    if sample.abs() > baseline * 1.2 {
+                        silence_count_cb.store(0, Ordering::Relaxed);
+                    } else {
+                        let c = silence_count_cb.fetch_add(1, Ordering::Relaxed) + 1;
+                        if c > sample_rate / 4 {
+                            finished_cb.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                }
+            },
+            err_fn,
+            None,
+        )?,
+        format => return Err(format!("Unsupported format {:?}", format).into()),
+    };
+
+    stream.play()?;
+    while !finished.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(stream);
+    let result = { buffer.lock().unwrap().clone() };
+    Ok(result)
+}
+
+/// Record and train the network on a list of prompt sentences.
+pub fn train_on_sentences(net: &mut SimpleNeuralNet, sentences: &[&str]) -> Result<(), Box<dyn Error>> {
+    for &s in sentences {
+        let samples = record_sentence(s)?;
+        pretrain_network(net, &samples, 1, 0.001);
+    }
+    println!("Sentence training complete.");
+    Ok(())
 }
 
 /// Asynchronous generator simulating a MIMO bit stream
@@ -231,27 +376,53 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
     }
     println!("Initial training complete.");
 
+    const PROMPTS: [&str; 15] = [
+        "The quick brown fox jumps over the lazy dog.",
+        "She had your dark suit in greasy wash water all year.",
+        "We promptly judged antique ivory buckles for the next prize.",
+        "A mad boxer shot a quick, gloved jab to the jaw of his dizzy opponent.",
+        "Jack quietly moved up front and seized the big ball of wax.",
+        "The job requires extra pluck and zeal from every young wage earner.",
+        "Just keep examining every low bid quoted for zinc etchings.",
+        "Grumpy wizards make toxic brew for the evil queen and jack.",
+        "Many voice match tools rely on distinct phonemes and cadence.",
+        "Voices differ in pitch, tone, rhythm, and pronunciation details.",
+        "Unique vocal prints can identify speakers with surprising accuracy.",
+        "Carefully crafted data improves the precision of speaker models.",
+        "Every human voice reveals subtle biological and linguistic traits.",
+        "He spoke with calm confidence, barely raising his tone.",
+        "Different accents often affect vowel shaping and syllable timing.",
+    ];
+
+    {
+        let mut net_lock = net.lock().unwrap();
+        train_on_sentences(&mut net_lock, &PROMPTS)?;
+    }
+
     const AMBIENT_SAMPLES: usize = 44100; // about one second at 44.1kHz
     let noise_mult = Arc::new(Mutex::new(1.2f32));
 
     // Spawn thread to listen for arrow key input and adjust noise gate
     {
         let noise_mult_ctrl = noise_mult.clone();
-        std::thread::spawn(move || loop {
-            if event::poll(Duration::from_millis(100)).unwrap() {
-                if let Event::Key(k) = event::read().unwrap() {
-                    match k.code {
-                        KeyCode::Up => {
-                            let mut m = noise_mult_ctrl.lock().unwrap();
-                            *m += 0.1;
-                            println!("Noise gate multiplier: {:.2}", *m);
+        std::thread::spawn(move || {
+            enable_raw_mode().ok();
+            loop {
+                if event::poll(Duration::from_millis(100)).unwrap() {
+                    if let Event::Key(k) = event::read().unwrap() {
+                        match k.code {
+                            KeyCode::Up => {
+                                let mut m = noise_mult_ctrl.lock().unwrap();
+                                *m += 0.1;
+                                println!("Noise gate multiplier: {:.2}", *m);
+                            }
+                            KeyCode::Down => {
+                                let mut m = noise_mult_ctrl.lock().unwrap();
+                                *m = (*m - 0.1).max(0.0);
+                                println!("Noise gate multiplier: {:.2}", *m);
+                            }
+                            _ => {}
                         }
-                        KeyCode::Down => {
-                            let mut m = noise_mult_ctrl.lock().unwrap();
-                            *m = (*m - 0.1).max(0.0);
-                            println!("Noise gate multiplier: {:.2}", *m);
-                        }
-                        _ => {}
                     }
                 }
             }
