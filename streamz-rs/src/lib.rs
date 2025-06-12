@@ -106,7 +106,9 @@ pub fn load_audio_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
     }
 }
 
-fn audio_metadata(path: &str) -> Result<(u32, u16), Box<dyn Error>> {
+/// Read the sample rate and bit depth from an audio file.
+/// Supports WAV and MP3 formats.
+pub fn audio_metadata(path: &str) -> Result<(u32, u16), Box<dyn Error>> {
     if path.to_ascii_lowercase().ends_with(".mp3") {
         let mut decoder = Decoder::new(File::open(path)?);
         if let Ok(Frame { sample_rate, .. }) = decoder.next_frame() {

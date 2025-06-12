@@ -2,8 +2,8 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use streamz_rs::{
-    identify_speaker_with_threshold, load_audio_samples, train_from_files, SimpleNeuralNet,
-    WINDOW_SIZE,
+    audio_metadata, identify_speaker_with_threshold, load_audio_samples,
+    train_from_files, SimpleNeuralNet, WINDOW_SIZE,
 };
 
 const MODEL_PATH: &str = "model.npz";
@@ -69,6 +69,16 @@ fn write_train_files(path: &str, files: &[(String, Option<usize>)]) {
     }
 }
 
+fn print_file_specs(files: &[(String, Option<usize>)]) {
+    println!("Detected file specs:");
+    for (path, _) in files {
+        match audio_metadata(path) {
+            Ok((sr, bits)) => println!("{} -> {} Hz, {} bits", path, sr, bits),
+            Err(e) => eprintln!("{} -> failed to read metadata: {}", path, e),
+        }
+    }
+}
+
 fn relabel_files(
     net: &SimpleNeuralNet,
     files: &mut [(String, Option<usize>)],
@@ -96,6 +106,7 @@ fn count_speakers(files: &[(String, Option<usize>)]) -> usize {
 
 fn main() {
     let mut train_files = load_train_files(TRAIN_FILE_LIST);
+    print_file_specs(&train_files);
     let num_speakers = count_speakers(&train_files);
     let train_refs: Vec<(&str, usize)> = train_files
         .iter()
