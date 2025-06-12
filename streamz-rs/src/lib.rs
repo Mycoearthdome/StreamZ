@@ -1,5 +1,5 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ndarray::{Array1, Array2, Axis};
 use rand::Rng;
@@ -193,22 +193,19 @@ pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
                 }
 
                 if filtered.abs() < baseline * 0.3 {
-                    continue;
-                }
-                buffer_cb.lock().unwrap().push(processed_i16);
-                sample_count_cb.fetch_add(1, Ordering::Relaxed);
-                if sample_count_cb.load(Ordering::Relaxed) > sample_rate * MAX_RECORD_SECS {
-                    finished_cb.store(true, Ordering::Relaxed);
-                    break;
-                }
-                if filtered.abs() > baseline * 0.3 {
-                    silence_count_cb.store(0, Ordering::Relaxed);
-                } else {
                     let c = silence_count_cb.fetch_add(1, Ordering::Relaxed) + 1;
                     if c > sample_rate / 4 {
                         finished_cb.store(true, Ordering::Relaxed);
                         break;
                     }
+                    continue;
+                }
+                silence_count_cb.store(0, Ordering::Relaxed);
+                buffer_cb.lock().unwrap().push(processed_i16);
+                sample_count_cb.fetch_add(1, Ordering::Relaxed);
+                if sample_count_cb.load(Ordering::Relaxed) > sample_rate * MAX_RECORD_SECS {
+                    finished_cb.store(true, Ordering::Relaxed);
+                    break;
                 }
             }
         },
@@ -468,21 +465,23 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
     loop {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(k) = event::read()? {
-                match k.code {
-                    KeyCode::Up => {
-                        let mut m = noise_mult.lock().unwrap();
-                        *m += 0.1;
-                        println!("Noise gate multiplier: {:.2}", *m);
+                if k.kind == KeyEventKind::Press {
+                    match k.code {
+                        KeyCode::Up => {
+                            let mut m = noise_mult.lock().unwrap();
+                            *m += 0.1;
+                            println!("Noise gate multiplier: {:.2}", *m);
+                        }
+                        KeyCode::Down => {
+                            let mut m = noise_mult.lock().unwrap();
+                            *m = (*m - 0.1).max(0.0);
+                            println!("Noise gate multiplier: {:.2}", *m);
+                        }
+                        KeyCode::Esc => {
+                            break;
+                        }
+                        _ => {}
                     }
-                    KeyCode::Down => {
-                        let mut m = noise_mult.lock().unwrap();
-                        *m = (*m - 0.1).max(0.0);
-                        println!("Noise gate multiplier: {:.2}", *m);
-                    }
-                    KeyCode::Esc => {
-                        break;
-                    }
-                    _ => {}
                 }
             }
         }
