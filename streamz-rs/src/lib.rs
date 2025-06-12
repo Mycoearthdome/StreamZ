@@ -171,6 +171,33 @@ pub fn pretrain_network(
     }
 }
 
+/// Load all samples from a 16-bit mono WAV file.
+pub fn load_wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
+    let mut reader = hound::WavReader::open(path)?;
+    if reader.spec().bits_per_sample != 16 {
+        return Err("Only 16-bit WAV files supported".into());
+    }
+    let samples: Result<Vec<i16>, _> = reader.samples::<i16>().collect();
+    Ok(samples?)
+}
+
+/// Train the network using a list of `(path, class)` tuples containing WAV files.
+pub fn train_from_files(
+    net: &mut SimpleNeuralNet,
+    files: &[(&str, usize)],
+    num_speakers: usize,
+    epochs: usize,
+    lr: f32,
+) -> Result<(), Box<dyn Error>> {
+    for _ in 0..epochs {
+        for &(path, class) in files {
+            let samples = load_wav_samples(path)?;
+            pretrain_network(net, &samples, class, num_speakers, 1, lr);
+        }
+    }
+    Ok(())
+}
+
 /// Record audio for a sentence using a simple silence detector.
 pub fn record_sentence(prompt: &str, save_path: Option<&str>) -> Result<Vec<i16>, Box<dyn Error>> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
