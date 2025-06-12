@@ -1,14 +1,14 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use hound;
 use ndarray::{Array1, Array2, Axis};
+use ndarray_npy::{NpzReader, NpzWriter};
 use rand::Rng;
 use rodio;
 use std::error::Error;
 use std::fs::File;
 use std::sync::{Arc, Mutex};
-use ndarray_npy::{NpzReader, NpzWriter};
-use hound;
 use tokio::time::{sleep, Duration};
 
 const SAMPLE_RATE: u32 = 44100;
@@ -111,7 +111,6 @@ fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
         .collect()
 }
 
-
 /// Remove the estimated ambient noise level from a raw sample.
 fn subtract_baseline(sample: i16, baseline: f32) -> f32 {
     let sign = if sample >= 0 { 1.0 } else { -1.0 };
@@ -192,6 +191,21 @@ pub fn load_wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
     Ok(samples?)
 }
 
+/// Determine the sample rate and bit depth of the provided WAV files.
+/// Returns an error if the files have mismatched specs.
+fn detect_dataset_specs(files: &[(&str, usize)]) -> Result<(u32, u16), Box<dyn Error>> {
+    let mut iter = files.iter();
+    let first = iter.next().ok_or("No training files provided")?;
+    let spec = hound::WavReader::open(first.0)?.spec();
+    for (path, _) in iter {
+        let this = hound::WavReader::open(path)?.spec();
+        if this.sample_rate != spec.sample_rate || this.bits_per_sample != spec.bits_per_sample {
+            return Err(format!("Inconsistent WAV specs between {} and {}", first.0, path).into());
+        }
+    }
+    Ok((spec.sample_rate, spec.bits_per_sample))
+}
+
 /// Train the network using a list of `(path, class)` tuples containing WAV files.
 pub fn train_from_files(
     net: &mut SimpleNeuralNet,
@@ -200,6 +214,14 @@ pub fn train_from_files(
     epochs: usize,
     lr: f32,
 ) -> Result<(), Box<dyn Error>> {
+    let (sample_rate, bits) = detect_dataset_specs(files)?;
+    println!(
+        "Detected training data: {} Hz, {} bits per sample",
+        sample_rate, bits
+    );
+    if bits != 16 {
+        return Err("Only 16-bit WAV files supported".into());
+    }
     for _ in 0..epochs {
         for &(path, class) in files {
             let samples = load_wav_samples(path)?;
@@ -474,8 +496,7 @@ pub fn identify_speaker(net: &SimpleNeuralNet, sample: &[i16]) -> usize {
             sums[i] += *v;
         }
     }
-    sums
-        .iter()
+    sums.iter()
         .enumerate()
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
         .map(|(i, _)| i)
@@ -509,7 +530,10 @@ pub async fn live_stream(
 
 /// Capture audio from the default microphone, process it with the network and play the result.
 /// The stream is passed directly to the neural network without altering pitch or tone.
-pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>, num_speakers: usize) -> Result<(), Box<dyn Error>> {
+pub fn live_mic_stream(
+    net: Arc<Mutex<SimpleNeuralNet>>,
+    num_speakers: usize,
+) -> Result<(), Box<dyn Error>> {
     let host = select_audio_host();
     println!("Detected audio backend: {}", detect_audio_sink());
     let input = host
