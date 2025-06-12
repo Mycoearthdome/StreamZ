@@ -12,6 +12,7 @@ use std::fs::File;
 
 const DEFAULT_SAMPLE_RATE: u32 = 44100;
 pub const WINDOW_SIZE: usize = 256;
+pub const MAX_SPEAKERS: usize = 153;
 
 /// Convert a raw i16 audio sample to a normalized f32 value in [-1.0, 1.0]
 pub fn i16_to_f32(sample: i16) -> f32 {
@@ -163,7 +164,10 @@ pub fn train_from_files(
         }
         for _ in 0..epochs {
             match load_audio_samples(path) {
-                Ok(samples) => pretrain_network(net, &samples, class, num_speakers, 1, lr),
+                Ok(samples) => {
+                    pretrain_network(net, &samples, class, num_speakers, 1, lr);
+                    net.record_training_file(class, path);
+                }
                 Err(e) => {
                     eprintln!("Skipping {}: {}", path, e);
                     break;
@@ -186,6 +190,9 @@ pub struct SimpleNeuralNet {
     b1: Array1<f32>,
     w2: Array2<f32>,
     b2: Array1<f32>,
+    num_speakers: usize,
+    /// List of training file paths for each speaker
+    file_lists: Vec<Vec<String>>,
     sample_rate: u32,
     bits: u16,
 }
@@ -196,36 +203,41 @@ impl SimpleNeuralNet {
         use rand::distributions::Uniform;
         let mut rng = rand::thread_rng();
         let dist = Uniform::new(-0.5, 0.5);
+        let w2 = Array2::from_shape_fn((hidden, MAX_SPEAKERS), |_| rng.sample(dist));
+        let b2 = Array1::zeros(MAX_SPEAKERS);
         Self {
             w1: Array2::from_shape_fn((input, hidden), |_| rng.sample(dist)),
             b1: Array1::zeros(hidden),
-            w2: Array2::from_shape_fn((hidden, output), |_| rng.sample(dist)),
-            b2: Array1::zeros(output),
+            w2,
+            b2,
+            num_speakers: output,
+            file_lists: vec![Vec::new(); output],
             sample_rate: DEFAULT_SAMPLE_RATE,
             bits: 16,
         }
     }
 
     pub fn output_size(&self) -> usize {
-        self.b2.len()
+        self.num_speakers
     }
 
     /// Add a new output class to the network by expanding the last layer
     pub fn add_output_class(&mut self) {
+        if self.num_speakers >= MAX_SPEAKERS {
+            return;
+        }
         use rand::distributions::Uniform;
         let mut rng = rand::thread_rng();
         let dist = Uniform::new(-0.5, 0.5);
         let hidden = self.w2.nrows();
-        let old_outputs = self.w2.ncols();
-        let mut new_w2 = Array2::<f32>::zeros((hidden, old_outputs + 1));
-        new_w2.slice_mut(s![.., ..old_outputs]).assign(&self.w2);
         for r in 0..hidden {
-            new_w2[[r, old_outputs]] = rng.sample(dist);
+            self.w2[[r, self.num_speakers]] = rng.sample(dist);
         }
-        self.w2 = new_w2;
-        let mut new_b2 = Array1::<f32>::zeros(old_outputs + 1);
-        new_b2.slice_mut(s![..old_outputs]).assign(&self.b2);
-        self.b2 = new_b2;
+        self.b2[self.num_speakers] = 0.0;
+        if self.file_lists.len() <= self.num_speakers {
+            self.file_lists.push(Vec::new());
+        }
+        self.num_speakers += 1;
     }
 
     pub fn set_dataset_specs(&mut self, sample_rate: u32, bits: u16) {
@@ -233,11 +245,23 @@ impl SimpleNeuralNet {
         self.bits = bits;
     }
 
+    /// Record a file path for the given speaker so it can be saved with the model
+    pub fn record_training_file(&mut self, class: usize, path: &str) {
+        if self.file_lists.len() <= class {
+            self.file_lists.resize_with(class + 1, Vec::new);
+        }
+        if !self.file_lists[class].contains(&path.to_string()) {
+            self.file_lists[class].push(path.to_string());
+        }
+    }
+
     /// Forward pass on a slice of f32 values
     pub fn forward(&self, bits: &[f32]) -> Vec<f32> {
         let x = Array1::from_vec(bits.to_vec());
         let h = (x.dot(&self.w1) + &self.b1).mapv(|v| v.tanh());
-        let out = h.dot(&self.w2) + &self.b2;
+        let w2 = self.w2.slice(s![.., ..self.num_speakers]);
+        let b2 = self.b2.slice(s![..self.num_speakers]);
+        let out = h.dot(&w2) + &b2;
         let max = out.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let exp = out.mapv(|v| (v - max).exp());
         let sum = exp.sum();
@@ -250,7 +274,9 @@ impl SimpleNeuralNet {
         let t = Array1::from_vec(target.to_vec());
         let h_pre = x.dot(&self.w1) + &self.b1;
         let h = h_pre.mapv(|v| v.tanh());
-        let out_pre = h.dot(&self.w2) + &self.b2;
+        let w2 = self.w2.slice(s![.., ..self.num_speakers]);
+        let b2 = self.b2.slice(s![..self.num_speakers]);
+        let out_pre = h.dot(&w2) + &b2;
         let max = out_pre.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let exp = out_pre.mapv(|v| (v - max).exp());
         let sum = exp.sum();
@@ -261,14 +287,20 @@ impl SimpleNeuralNet {
             .insert_axis(Axis(1))
             .dot(&delta_out.clone().insert_axis(Axis(0)));
         let grad_b2 = delta_out.clone();
-        let delta_h = delta_out.dot(&self.w2.t()) * h_pre.mapv(|v| 1.0 - v.tanh().powi(2));
+        let delta_h = delta_out.dot(&w2.t()) * h_pre.mapv(|v| 1.0 - v.tanh().powi(2));
         let grad_w1 = x
             .insert_axis(Axis(1))
             .dot(&delta_h.clone().insert_axis(Axis(0)));
         let grad_b1 = delta_h;
 
-        self.w2 -= &(grad_w2 * lr);
-        self.b2 -= &(grad_b2 * lr);
+        {
+            let mut w2_mut = self.w2.slice_mut(s![.., ..self.num_speakers]);
+            w2_mut -= &(grad_w2 * lr);
+        }
+        {
+            let mut b2_mut = self.b2.slice_mut(s![..self.num_speakers]);
+            b2_mut -= &(grad_b2 * lr);
+        }
         self.w1 -= &(grad_w1 * lr);
         self.b1 -= &(grad_b1 * lr);
     }
@@ -278,10 +310,22 @@ impl SimpleNeuralNet {
         let mut npz = NpzWriter::new(file);
         npz.add_array("w1", &self.w1)?;
         npz.add_array("b1", &self.b1)?;
-        npz.add_array("w2", &self.w2)?;
-        npz.add_array("b2", &self.b2)?;
         npz.add_array("sample_rate", &ndarray::arr1(&[self.sample_rate as i64]))?;
         npz.add_array("bits", &ndarray::arr1(&[self.bits as i64]))?;
+        npz.add_array("num_speakers", &ndarray::arr1(&[self.num_speakers as i64]))?;
+        for idx in 0..self.num_speakers {
+            let w_name = format!("w{}", idx + 1);
+            let b_name = format!("b{}", idx + 1);
+            let w_col = self.w2.column(idx).to_owned();
+            let b_val = Array1::<f32>::from_vec(vec![self.b2[idx]]);
+            npz.add_array(&w_name, &w_col)?;
+            npz.add_array(&b_name, &b_val)?;
+        }
+        for (idx, files) in self.file_lists.iter().take(self.num_speakers).enumerate() {
+            let joined = files.join("\n");
+            let arr = Array1::<u8>::from_vec(joined.as_bytes().to_vec());
+            npz.add_array(&format!("speaker_{}_files", idx), &arr)?;
+        }
         npz.finish()?;
         Ok(())
     }
@@ -289,13 +333,90 @@ impl SimpleNeuralNet {
     pub fn load(path: &str) -> Result<Self, Box<dyn Error>> {
         let file = File::open(path)?;
         let mut npz = NpzReader::new(file)?;
+        let names = npz.names()?;
         let sample_rate: ndarray::Array1<i64> = npz.by_name("sample_rate")?;
         let bits: ndarray::Array1<i64> = npz.by_name("bits")?;
+        let w1: Array2<f32> = npz.by_name("w1")?;
+        let b1: Array1<f32> = npz.by_name("b1")?;
+        let num_speakers_arr: Option<ndarray::Array1<i64>> =
+            if names.iter().any(|n| n == "num_speakers.npy") {
+                Some(npz.by_name("num_speakers")?)
+            } else {
+                None
+            };
+
+        let mut columns = Vec::new();
+        let mut biases = Vec::new();
+        let mut idx = 1;
+        loop {
+            let w_name = format!("w{}", idx);
+            let b_name = format!("b{}", idx);
+            let entry_w = format!("{}.npy", w_name);
+            let entry_b = format!("{}.npy", b_name);
+            if names.iter().any(|n| n == &entry_w) && names.iter().any(|n| n == &entry_b) {
+                let w_col: Array1<f32> = npz.by_name(&w_name)?;
+                let b_val: Array1<f32> = npz.by_name(&b_name)?;
+                columns.push(w_col);
+                biases.push(b_val[0]);
+                idx += 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut num_outputs = columns.len();
+        let hidden = w1.ncols();
+        let mut w2 = Array2::<f32>::zeros((hidden, MAX_SPEAKERS));
+        let mut b2 = Array1::<f32>::zeros(MAX_SPEAKERS);
+        if !columns.is_empty() {
+            for (i, col) in columns.into_iter().enumerate() {
+                w2.column_mut(i).assign(&col);
+            }
+            for (i, val) in biases.into_iter().enumerate() {
+                b2[i] = val;
+            }
+        } else if names.iter().any(|n| n == "w2.npy") {
+            let w2_raw: Array2<f32> = npz.by_name("w2")?;
+            let b2_raw: Array1<f32> = npz.by_name("b2")?;
+            num_outputs = b2_raw.len();
+            for i in 0..num_outputs {
+                w2.column_mut(i).assign(&w2_raw.column(i));
+                b2[i] = b2_raw[i];
+            }
+        }
+        let outputs = if let Some(arr) = num_speakers_arr {
+            arr[0] as usize
+        } else if num_outputs > 0 {
+            num_outputs
+        } else {
+            0
+        };
+
+        let mut file_lists = Vec::with_capacity(outputs);
+        for i in 0..outputs {
+            let name = format!("speaker_{}_files", i);
+            let entry_name = format!("{}.npy", name);
+            if names.iter().any(|n| n == &entry_name) {
+                let arr: Array1<u8> = npz.by_name(&name)?;
+                let text = String::from_utf8(arr.to_vec()).unwrap_or_default();
+                let files = if text.is_empty() {
+                    Vec::new()
+                } else {
+                    text.lines().map(|s| s.to_string()).collect()
+                };
+                file_lists.push(files);
+            } else {
+                file_lists.push(Vec::new());
+            }
+        }
+
         Ok(Self {
-            w1: npz.by_name("w1")?,
-            b1: npz.by_name("b1")?,
-            w2: npz.by_name("w2")?,
-            b2: npz.by_name("b2")?,
+            w1,
+            b1,
+            w2,
+            b2,
+            num_speakers: outputs,
+            file_lists,
             sample_rate: sample_rate[0] as u32,
             bits: bits[0] as u16,
         })
