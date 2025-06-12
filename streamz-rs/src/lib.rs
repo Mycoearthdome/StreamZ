@@ -52,6 +52,17 @@ pub fn bits_to_i16(bits: &[f32]) -> i16 {
     value
 }
 
+/// Remove the estimated ambient noise level from a raw sample.
+fn subtract_baseline(sample: i16, baseline: f32) -> i16 {
+    let sign = if sample >= 0 { 1.0 } else { -1.0 };
+    let mut val = sample.abs() as f32 - baseline;
+    if val < 0.0 {
+        val = 0.0;
+    }
+    let result = val * sign;
+    result.clamp(i16::MIN as f32, i16::MAX as f32) as i16
+}
+
 /// Record a short voice sample from the default microphone and return raw `i16` samples.
 pub fn record_voice_sample(duration_secs: u64) -> Result<Vec<i16>, Box<dyn Error>> {
     use std::sync::{Arc, Mutex};
@@ -157,22 +168,26 @@ pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
 
             let baseline = *ambient_sum_cb.lock().unwrap();
             for &sample in data {
+                let processed = subtract_baseline(sample, baseline);
                 if !started_cb.load(Ordering::Relaxed) {
-                    if (sample.abs() as f32) > baseline * 1.2 {
+                    if (processed.abs() as f32) > baseline * 0.3 {
                         started_cb.store(true, Ordering::Relaxed);
                         sample_count_cb.store(0, Ordering::Relaxed);
-                        buffer_cb.lock().unwrap().push(sample);
+                        buffer_cb.lock().unwrap().push(processed);
                     }
                     continue;
                 }
 
-                buffer_cb.lock().unwrap().push(sample);
+                if (processed.abs() as f32) < baseline * 0.3 {
+                    continue;
+                }
+                buffer_cb.lock().unwrap().push(processed);
                 sample_count_cb.fetch_add(1, Ordering::Relaxed);
                 if sample_count_cb.load(Ordering::Relaxed) > sample_rate * MAX_RECORD_SECS {
                     finished_cb.store(true, Ordering::Relaxed);
                     break;
                 }
-                if (sample.abs() as f32) > baseline * 1.2 {
+                if (processed.abs() as f32) > baseline * 0.3 {
                     silence_count_cb.store(0, Ordering::Relaxed);
                 } else {
                     let c = silence_count_cb.fetch_add(1, Ordering::Relaxed) + 1;
@@ -430,12 +445,13 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
 
                 let baseline = *ambient_sum_cb.lock().unwrap();
                 for &sample in data {
+                    let processed = subtract_baseline(sample, baseline);
                     let mult = *noise_mult_cb.lock().unwrap();
-                    if (sample.abs() as f32) < baseline * mult {
+                    if (processed.abs() as f32) < baseline * mult {
                         continue;
                     }
                     let mut net = net_clone.lock().unwrap();
-                    let bits = i16_to_bits(sample);
+                    let bits = i16_to_bits(processed);
                     let out_bits = net.forward(&bits);
                     net.train(&bits, &bits, 0.001);
                     let out_sample = bits_to_i16(&out_bits);

@@ -12,6 +12,7 @@ The project now focuses on streaming voice data directly from your microphone. A
 - Uses ALSA for audio output on Linux.
 - Command line program demonstrating live streaming from the microphone.
 - Noise gate threshold adjustable in real time using the Up and Down arrow keys.
+- Ambient noise baseline is subtracted from incoming audio so training focuses on clean voice samples.
 
 ## Requirements
 
