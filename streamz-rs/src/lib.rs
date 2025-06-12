@@ -8,42 +8,13 @@ use rand::Rng;
 // use rodio;
 use std::error::Error;
 use std::fs::File;
-use std::sync::{Arc, Mutex};
-use tokio::time::{sleep, Duration};
 
 const DEFAULT_SAMPLE_RATE: u32 = 44100;
-const CHANNELS: u16 = 1;
 pub const WINDOW_SIZE: usize = 256;
-
-/// Convert a 16-bit sample to a vector of bits represented as f32 values (0.0 or 1.0)
-pub fn i16_to_bits(val: i16) -> [f32; 16] {
-    let mut bits = [0.0f32; 16];
-    let val_u16 = val as u16;
-    for i in 0..16 {
-        bits[i] = if (val_u16 >> i) & 1 == 1 { 1.0 } else { 0.0 };
-    }
-    bits
-}
-
-/// Convert a vector of bits back into a 16-bit sample
-pub fn bits_to_i16(bits: &[f32]) -> i16 {
-    let mut value: u16 = 0;
-    for i in 0..16 {
-        if bits[i] > 0.5 {
-            value |= 1 << i;
-        }
-    }
-    value as i16
-}
 
 /// Convert a raw i16 audio sample to a normalized f32 value in [-1.0, 1.0]
 pub fn i16_to_f32(sample: i16) -> f32 {
     sample as f32 / i16::MAX as f32
-}
-
-/// Convert a normalized f32 value back into an i16 audio sample
-pub fn f32_to_i16(sample: f32) -> i16 {
-    (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
 }
 
 /// Split samples into consecutive windows of `WINDOW_SIZE` normalized floats
@@ -67,24 +38,6 @@ fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
         })
         .collect()
 }
-
-/// Remove the estimated ambient noise level from a raw sample.
-fn subtract_baseline(sample: i16, baseline: f32) -> f32 {
-    let sign = if sample >= 0 { 1.0 } else { -1.0 };
-    let mut val = sample.abs() as f32 - baseline;
-    if val < 0.0 {
-        val = 0.0;
-    }
-    val * sign
-}
-
-/// Apply a simple low-pass filter to reduce high frequency noise.
-fn low_pass_filter(sample: f32, prev: &mut f32, alpha: f32) -> f32 {
-    let filtered = alpha * sample + (1.0 - alpha) * *prev;
-    *prev = filtered;
-    filtered
-}
-
 
 /// Pre-train the network with a slice of `i16` samples.
 pub fn pretrain_network(
@@ -158,34 +111,9 @@ pub fn train_from_files(
     Ok(())
 }
 
-
 /// Record and train the network on a list of prompt sentences.
 /// Record each prompt sentence and train the network.
 /// The full list is cycled `cycles` times before returning.
-
-/// Asynchronous generator simulating a MIMO bit stream
-pub struct MIMOStream {
-    num_bits: usize,
-    delay: Duration,
-}
-
-impl MIMOStream {
-    pub fn new(num_bits: usize, delay_ms: u64) -> Self {
-        Self {
-            num_bits,
-            delay: Duration::from_millis(delay_ms),
-        }
-    }
-
-    /// Return a vector of random bits after a small delay
-    pub async fn get_input_bits(&self) -> Vec<f32> {
-        sleep(self.delay).await;
-        let mut rng = rand::thread_rng();
-        (0..self.num_bits)
-            .map(|_| if rng.gen_bool(0.5) { 1.0 } else { 0.0 })
-            .collect()
-    }
-}
 
 /// Simple feed-forward neural network operating on floating point vectors
 pub struct SimpleNeuralNet {
@@ -215,14 +143,6 @@ impl SimpleNeuralNet {
 
     pub fn output_size(&self) -> usize {
         self.b2.len()
-    }
-
-    pub fn sample_rate(&self) -> u32 {
-        self.sample_rate
-    }
-
-    pub fn bits(&self) -> u16 {
-        self.bits
     }
 
     pub fn set_dataset_specs(&mut self, sample_rate: u32, bits: u16) {
@@ -313,18 +233,4 @@ pub fn identify_speaker(net: &SimpleNeuralNet, sample: &[i16]) -> usize {
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
         .map(|(i, _)| i)
         .unwrap_or(0)
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bit_roundtrip() {
-        let value: i16 = -1234;
-        let bits = i16_to_bits(value);
-        let result = bits_to_i16(&bits);
-        assert_eq!(value, result);
-    }
 }
