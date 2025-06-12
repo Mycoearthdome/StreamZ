@@ -1,19 +1,15 @@
 # StreamZ
 
-StreamZ is a lightweight prototype for handling Multiple Input Multiple Output (MIMO) data streams and processing them with a neural network in real time.
-
-The project now focuses on streaming voice data directly from your microphone. Audio is captured live, passed through a small neural network and streamed back to your speakers.
+StreamZ is a lightweight prototype for handling real time voice data and processing it with a neural network.  The current version focuses on speaker identification rather than audio reconstruction.
 
 ## Features
 
 - `MIMOStream` simulator generating bit vectors.
-- `SimpleNeuralNet` for quick experimentation.
+- `SimpleNeuralNet` with softmax output for multi speaker classification.
 - Samples are normalized to floating point values before neural processing.
-- Rust library `streamz-rs` for live microphone streaming through a small neural network.
-- Uses ALSA for audio output on Linux.
-- Command line program demonstrating live streaming from the microphone.
+- Training samples can optionally be saved as `.wav` files for later use.
+- Model weights are stored in an `npz` file so the network can be reused between runs.
 - Noise gate threshold adjustable in real time using the Up and Down arrow keys.
-- Ambient noise baseline is subtracted from incoming audio so training focuses on clean voice samples.
 
 ## Requirements
 
@@ -40,18 +36,13 @@ Run the live streaming program:
 ./target/release/StreamZ
 ```
 
-The program listens to your microphone and plays the processed signal continuously.
-When it starts you will be prompted to read a series of built‑in sentences.
-Each sentence is recorded once your voice rises above the detected noise level
-and immediately used for training. The list is cycled once before streaming
-begins.
-If you do not hear any output, ensure your audio devices are recognized and the
-`libasound2-dev` package is installed on Linux. The neural network now starts
-with random weights so it immediately produces a non-zero signal.
+The program listens to your microphone and prints the predicted speaker for short
+windows of speech.  On first run you will be prompted to record a few example
+sentences for each speaker.  These samples are used to train the network and are
+written to `.wav` files along with an `model.npz` weight file.  Subsequent runs
+load the saved model automatically.
 During streaming you can press the Up and Down arrow keys to raise or lower the
 noise gate threshold. The current level is printed each time you adjust it.
-Audio output uses ALSA on Linux.
-Samples are rendered as 16-bit little-endian mono at 44.1 kHz.
 
 ## License
 

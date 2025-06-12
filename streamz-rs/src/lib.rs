@@ -5,7 +5,10 @@ use ndarray::{Array1, Array2, Axis};
 use rand::Rng;
 use rodio;
 use std::error::Error;
+use std::fs::File;
 use std::sync::{Arc, Mutex};
+use ndarray_npy::{NpzReader, NpzWriter};
+use hound;
 use tokio::time::{sleep, Duration};
 
 const SAMPLE_RATE: u32 = 44100;
@@ -148,17 +151,28 @@ pub fn record_voice_sample(duration_secs: u64) -> Result<Vec<i16>, Box<dyn Error
 }
 
 /// Pre-train the network with a slice of `i16` samples.
-pub fn pretrain_network(net: &mut SimpleNeuralNet, samples: &[i16], epochs: usize, lr: f32) {
+pub fn pretrain_network(
+    net: &mut SimpleNeuralNet,
+    samples: &[i16],
+    target_class: usize,
+    num_classes: usize,
+    epochs: usize,
+    lr: f32,
+) {
+    let mut target = vec![0.0f32; num_classes];
+    if target_class < num_classes {
+        target[target_class] = 1.0;
+    }
     for _ in 0..epochs {
         for &sample in samples {
             let val = i16_to_f32(sample);
-            net.train(&[val], &[val], lr);
+            net.train(&[val], &target, lr);
         }
     }
 }
 
 /// Record audio for a sentence using a simple silence detector.
-pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
+pub fn record_sentence(prompt: &str, save_path: Option<&str>) -> Result<Vec<i16>, Box<dyn Error>> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -264,6 +278,19 @@ pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
     }
     drop(stream);
     let result = { buffer.lock().unwrap().clone() };
+    if let Some(path) = save_path {
+        let spec = hound::WavSpec {
+            channels: CHANNELS,
+            sample_rate: SAMPLE_RATE,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec)?;
+        for s in &result {
+            writer.write_sample(*s)?;
+        }
+        writer.finalize()?;
+    }
     Ok(result)
 }
 
@@ -272,13 +299,15 @@ pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
 /// The full list is cycled `cycles` times before returning.
 pub fn train_on_sentences(
     net: &mut SimpleNeuralNet,
-    sentences: &[&str],
+    sentences: &[(&str, usize)],
+    num_speakers: usize,
     cycles: usize,
 ) -> Result<(), Box<dyn Error>> {
     for _ in 0..cycles {
-        for &s in sentences {
-            let samples = record_sentence(s)?;
-            pretrain_network(net, &samples, 1, 0.001);
+        for (idx, &(s, class)) in sentences.iter().enumerate() {
+            let filename = format!("speaker{}_{}.wav", class, idx);
+            let samples = record_sentence(s, Some(&filename))?;
+            pretrain_network(net, &samples, class, num_speakers, 1, 0.001);
         }
     }
     println!("Sentence training complete.");
@@ -331,25 +360,34 @@ impl SimpleNeuralNet {
         }
     }
 
+    pub fn output_size(&self) -> usize {
+        self.b2.len()
+    }
+
     /// Forward pass on a slice of f32 values
     pub fn forward(&self, bits: &[f32]) -> Vec<f32> {
         let x = Array1::from_vec(bits.to_vec());
         let h = (x.dot(&self.w1) + &self.b1).mapv(|v| v.tanh());
         let out = h.dot(&self.w2) + &self.b2;
-        out.mapv(|v| v.tanh()).to_vec()
+        let max = out.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exp = out.mapv(|v| (v - max).exp());
+        let sum = exp.sum();
+        (exp / sum).to_vec()
     }
 
-    /// Single-step training using mean squared error and a simple gradient
+    /// Single-step training using cross entropy loss
     pub fn train(&mut self, bits: &[f32], target: &[f32], lr: f32) {
         let x = Array1::from_vec(bits.to_vec());
         let t = Array1::from_vec(target.to_vec());
         let h_pre = x.dot(&self.w1) + &self.b1;
         let h = h_pre.mapv(|v| v.tanh());
         let out_pre = h.dot(&self.w2) + &self.b2;
-        let out = out_pre.mapv(|v| v.tanh());
+        let max = out_pre.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exp = out_pre.mapv(|v| (v - max).exp());
+        let sum = exp.sum();
+        let out = exp.mapv(|v| v / sum);
 
-        let error = &out - &t;
-        let delta_out = error * out_pre.mapv(|v| 1.0 - v.tanh().powi(2));
+        let delta_out = &out - &t;
         let grad_w2 = h
             .insert_axis(Axis(1))
             .dot(&delta_out.clone().insert_axis(Axis(0)));
@@ -365,6 +403,45 @@ impl SimpleNeuralNet {
         self.w1 -= &(grad_w1 * lr);
         self.b1 -= &(grad_b1 * lr);
     }
+
+    pub fn save(&self, path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::create(path)?;
+        let mut npz = NpzWriter::new(file);
+        npz.add_array("w1", &self.w1)?;
+        npz.add_array("b1", &self.b1)?;
+        npz.add_array("w2", &self.w2)?;
+        npz.add_array("b2", &self.b2)?;
+        npz.finish()?;
+        Ok(())
+    }
+
+    pub fn load(path: &str) -> Result<Self, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let mut npz = NpzReader::new(file)?;
+        Ok(Self {
+            w1: npz.by_name("w1.npy")?,
+            b1: npz.by_name("b1.npy")?,
+            w2: npz.by_name("w2.npy")?,
+            b2: npz.by_name("b2.npy")?,
+        })
+    }
+}
+
+/// Predict the speaker ID from a sample slice using the network
+pub fn identify_speaker(net: &SimpleNeuralNet, sample: &[i16]) -> usize {
+    let mut sums = vec![0.0f32; net.output_size()];
+    for &s in sample {
+        let out = net.forward(&[i16_to_f32(s)]);
+        for (i, v) in out.iter().enumerate() {
+            sums[i] += *v;
+        }
+    }
+    sums
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .map(|(i, _)| i)
+        .unwrap_or(0)
 }
 
 /// Continuously read bits from a `MIMOStream`, train the network and play the output
@@ -394,7 +471,7 @@ pub async fn live_stream(
 
 /// Capture audio from the default microphone, process it with the network and play the result.
 /// The stream is passed directly to the neural network without altering pitch or tone.
-pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn Error>> {
+pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>, num_speakers: usize) -> Result<(), Box<dyn Error>> {
     let host = select_audio_host();
     println!("Detected audio backend: {}", detect_audio_sink());
     let input = host
@@ -406,48 +483,29 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
         buffer_size: cpal::BufferSize::Default,
     };
 
-    let output = host
-        .default_output_device()
-        .ok_or("No output device available")?;
-    let (_out_stream, handle) = rodio::OutputStream::try_from_device(&output)?;
-    let sink = Arc::new(rodio::Sink::try_new(&handle)?);
-    let sink_cb = sink.clone();
-
-    let sample_rate = SAMPLE_RATE;
-    let channels = CHANNELS;
-
     let err_fn = |err| eprintln!("Stream error: {}", err);
 
     println!("Beginning training. Please read each sentence after the prompt.");
 
-    const PROMPTS: [&str; 15] = [
-        "The quick brown fox jumps over the lazy dog.",
-        "She had your dark suit in greasy wash water all year.",
-        "We promptly judged antique ivory buckles for the next prize.",
-        "A mad boxer shot a quick, gloved jab to the jaw of his dizzy opponent.",
-        "Jack quietly moved up front and seized the big ball of wax.",
-        "The job requires extra pluck and zeal from every young wage earner.",
-        "Just keep examining every low bid quoted for zinc etchings.",
-        "Grumpy wizards make toxic brew for the evil queen and jack.",
-        "Many voice match tools rely on distinct phonemes and cadence.",
-        "Voices differ in pitch, tone, rhythm, and pronunciation details.",
-        "Unique vocal prints can identify speakers with surprising accuracy.",
-        "Carefully crafted data improves the precision of speaker models.",
-        "Every human voice reveals subtle biological and linguistic traits.",
-        "He spoke with calm confidence, barely raising his tone.",
-        "Different accents often affect vowel shaping and syllable timing.",
+    const PROMPTS: [(&str, usize); 4] = [
+        ("Speaker A one", 0),
+        ("Speaker A two", 0),
+        ("Speaker B one", 1),
+        ("Speaker B two", 1),
     ];
 
     const SENTENCE_CYCLES: usize = 1;
 
     {
         let mut net_lock = net.lock().unwrap();
-        train_on_sentences(&mut net_lock, &PROMPTS, SENTENCE_CYCLES)?;
+        train_on_sentences(&mut net_lock, &PROMPTS, num_speakers, SENTENCE_CYCLES)?;
+        net_lock.save("model.npz").ok();
     }
 
     const AMBIENT_SAMPLES: usize = 44100; // about one second at 44.1kHz
     let noise_mult = Arc::new(Mutex::new(1.2f32));
     let filter_prev = Arc::new(Mutex::new(0f32));
+    let audio_buffer = Arc::new(Mutex::new(Vec::new()));
 
     let stream = {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -460,12 +518,12 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
         let ambient_sum_cb = ambient_sum.clone();
         let ambient_count_cb = ambient_count.clone();
         let has_baseline_cb = has_baseline.clone();
+        let audio_buffer_cb = audio_buffer.clone();
 
         build_input_stream_i16(
             &input,
             &config,
             move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                let mut output = Vec::with_capacity(data.len());
                 if !has_baseline_cb.load(Ordering::Relaxed) {
                     let mut sum = ambient_sum_cb.lock().unwrap();
                     for &sample in data {
@@ -491,17 +549,17 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
                     if filtered.abs() < baseline * mult {
                         continue;
                     }
-                    let sample_norm = i16_to_f32(filtered as i16);
-                    let mut net = net_clone.lock().unwrap();
-                    let out_vec = net.forward(&[sample_norm]);
-                    net.train(&[sample_norm], &[sample_norm], 0.001);
-                    let out_sample = f32_to_i16(out_vec[0]);
-                    output.push(out_sample);
-                }
-                if !output.is_empty() {
-                    let buffer =
-                        rodio::buffer::SamplesBuffer::new(channels, sample_rate, output.clone());
-                    sink_cb.append(buffer);
+                    let mut buf = audio_buffer_cb.lock().unwrap();
+                    buf.push(filtered as i16);
+                    if buf.len() >= 2048 {
+                        let slice = buf.clone();
+                        buf.clear();
+                        let speaker = {
+                            let net = net_clone.lock().unwrap();
+                            identify_speaker(&net, &slice)
+                        };
+                        println!("Speaker: {}", speaker);
+                    }
                 }
             },
             err_fn,
@@ -536,7 +594,6 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
     }
     disable_raw_mode()?;
     drop(stream);
-    sink.sleep_until_end();
     Ok(())
 }
 
