@@ -7,16 +7,27 @@ use streamz_rs::{
     identify_speaker, load_wav_samples, train_from_files, SimpleNeuralNet, WINDOW_SIZE,
 };
 
-const TRAIN_FILES: [(&str, usize); 6] = [
-    ("examples/training_data/arctic_a0008.wav", 0),
-    ("examples/training_data/arctic_a0015.wav", 0),
-    ("examples/training_data/arctic_a0021.wav", 0),
-    ("examples/training_data/arctic_b0196.wav", 1),
-    ("examples/training_data/arctic_b0356.wav", 1),
-    ("examples/training_data/arctic_b0417.wav", 1),
-];
+include!(concat!(env!("OUT_DIR"), "/train_files.rs"));
 
 const MODEL_PATH: &str = "model.npz";
+const TRAIN_FILE_LIST: &str = "train_files.txt";
+
+fn write_train_files(path: &str, files: &[(&str, usize)]) {
+    if let Ok(mut f) = std::fs::File::create(path) {
+        for &(p, c) in files {
+            let _ = writeln!(f, "{},{}", p, c);
+        }
+    }
+}
+
+fn rebuild_project() {
+    if let Ok(mut child) = std::process::Command::new("cargo")
+        .args(&["build", "--release"])
+        .spawn()
+    {
+        let _ = child.wait();
+    }
+}
 
 /// Determine the number of speakers based on the TRAIN_FILES array.
 /// The highest class index is assumed to be the last speaker and
@@ -48,6 +59,8 @@ fn main() {
                 if let Err(e) = n.save(MODEL_PATH) {
                     eprintln!("Failed to save model: {}", e);
                 }
+                write_train_files(TRAIN_FILE_LIST, &TRAIN_FILES);
+                rebuild_project();
                 n
             }
         }
@@ -60,6 +73,8 @@ fn main() {
         if let Err(e) = n.save(MODEL_PATH) {
             eprintln!("Failed to save model: {}", e);
         }
+        write_train_files(TRAIN_FILE_LIST, &TRAIN_FILES);
+        rebuild_project();
         n
     };
     println!("Model ready. Choose a speaker file to test:");
