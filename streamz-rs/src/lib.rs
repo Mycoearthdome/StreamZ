@@ -88,15 +88,24 @@ pub fn bits_to_i16(bits: &[f32]) -> i16 {
     value as i16
 }
 
+/// Convert a raw i16 audio sample to a normalized f32 value in [-1.0, 1.0]
+pub fn i16_to_f32(sample: i16) -> f32 {
+    sample as f32 / i16::MAX as f32
+}
+
+/// Convert a normalized f32 value back into an i16 audio sample
+pub fn f32_to_i16(sample: f32) -> i16 {
+    (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+}
+
 /// Remove the estimated ambient noise level from a raw sample.
-fn subtract_baseline(sample: i16, baseline: f32) -> i16 {
+fn subtract_baseline(sample: i16, baseline: f32) -> f32 {
     let sign = if sample >= 0 { 1.0 } else { -1.0 };
     let mut val = sample.abs() as f32 - baseline;
     if val < 0.0 {
         val = 0.0;
     }
-    let result = val * sign;
-    result.clamp(i16::MIN as f32, i16::MAX as f32) as i16
+    val * sign
 }
 
 /// Apply a simple low-pass filter to reduce high frequency noise.
@@ -142,8 +151,8 @@ pub fn record_voice_sample(duration_secs: u64) -> Result<Vec<i16>, Box<dyn Error
 pub fn pretrain_network(net: &mut SimpleNeuralNet, samples: &[i16], epochs: usize, lr: f32) {
     for _ in 0..epochs {
         for &sample in samples {
-            let bits = i16_to_bits(sample);
-            net.train(&bits, &bits, lr);
+            let val = i16_to_f32(sample);
+            net.train(&[val], &[val], lr);
         }
     }
 }
@@ -214,7 +223,7 @@ pub fn record_sentence(prompt: &str) -> Result<Vec<i16>, Box<dyn Error>> {
 
             let baseline = *ambient_sum_cb.lock().unwrap();
             for &sample in data {
-                let processed = subtract_baseline(sample, baseline) as f32;
+                let processed = subtract_baseline(sample, baseline);
                 let filtered = {
                     let mut prev = filter_prev_cb.lock().unwrap();
                     low_pass_filter(processed, &mut *prev, 0.05)
@@ -300,7 +309,7 @@ impl MIMOStream {
     }
 }
 
-/// Simple feed-forward neural network operating on bit vectors
+/// Simple feed-forward neural network operating on floating point vectors
 pub struct SimpleNeuralNet {
     w1: Array2<f32>,
     b1: Array1<f32>,
@@ -322,12 +331,12 @@ impl SimpleNeuralNet {
         }
     }
 
-    /// Forward pass on a slice of f32 bits
+    /// Forward pass on a slice of f32 values
     pub fn forward(&self, bits: &[f32]) -> Vec<f32> {
         let x = Array1::from_vec(bits.to_vec());
         let h = (x.dot(&self.w1) + &self.b1).mapv(|v| v.tanh());
         let out = h.dot(&self.w2) + &self.b2;
-        out.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 }).to_vec()
+        out.mapv(|v| v.tanh()).to_vec()
     }
 
     /// Single-step training using mean squared error and a simple gradient
@@ -371,9 +380,13 @@ pub async fn live_stream(
     let sink = rodio::Sink::try_new(&handle)?;
     loop {
         let bits = stream.get_input_bits().await;
-        let out_bits = net.forward(&bits);
+        let out = net.forward(&bits);
         net.train(&bits, &bits, 0.001);
-        let sample = bits_to_i16(&out_bits);
+        let thresh: Vec<f32> = out
+            .iter()
+            .map(|v| if *v > 0.0 { 1.0 } else { 0.0 })
+            .collect();
+        let sample = bits_to_i16(&thresh);
         let buffer = rodio::buffer::SamplesBuffer::new(1, 44100, vec![sample]);
         sink.append(buffer);
     }
@@ -469,7 +482,7 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
 
                 let baseline = *ambient_sum_cb.lock().unwrap();
                 for &sample in data {
-                    let processed = subtract_baseline(sample, baseline) as f32;
+                    let processed = subtract_baseline(sample, baseline);
                     let filtered = {
                         let mut prev = filter_prev_cb.lock().unwrap();
                         low_pass_filter(processed, &mut *prev, 0.05)
@@ -478,12 +491,11 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
                     if filtered.abs() < baseline * mult {
                         continue;
                     }
-                    let processed_i16 = filtered as i16;
+                    let sample_norm = i16_to_f32(filtered as i16);
                     let mut net = net_clone.lock().unwrap();
-                    let bits = i16_to_bits(processed_i16);
-                    let out_bits = net.forward(&bits);
-                    net.train(&bits, &bits, 0.001);
-                    let out_sample = bits_to_i16(&out_bits);
+                    let out_vec = net.forward(&[sample_norm]);
+                    net.train(&[sample_norm], &[sample_norm], 0.001);
+                    let out_sample = f32_to_i16(out_vec[0]);
                     output.push(out_sample);
                 }
                 if !output.is_empty() {
