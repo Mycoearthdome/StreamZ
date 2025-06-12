@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::Path;
 use streamz_rs::{
     identify_speaker, load_wav_samples, train_from_files, SimpleNeuralNet, WINDOW_SIZE,
@@ -110,46 +110,9 @@ fn main() {
         eprintln!("Failed to relabel files: {}", e);
     } else {
         write_train_files(TRAIN_FILE_LIST, &train_files);
-    }
-    println!("Model ready. Choose a speaker file to test:");
-
-    // Pick one example file per speaker for testing prompts
-    let mut sample_for_speaker: Vec<Option<&str>> = vec![None; num_speakers];
-    for (path, class) in &train_files {
-        if *class < num_speakers && sample_for_speaker[*class].is_none() {
-            sample_for_speaker[*class] = Some(path.as_str());
+        println!("Updated training file labels:");
+        for (p, c) in &train_files {
+            println!("{} -> speaker {}", p, c + 1);
         }
-    }
-    for (i, sample) in sample_for_speaker.iter().enumerate() {
-        if sample.is_some() {
-            println!("[{}] Speaker {}", i + 1, i + 1);
-        }
-    }
-    print!("> ");
-    io::stdout().flush().unwrap();
-    let mut input = String::new();
-    if io::stdin().read_line(&mut input).is_err() {
-        return;
-    }
-    let choice: usize = match input.trim().parse() {
-        Ok(n) if n >= 1 && n <= num_speakers => n,
-        _ => {
-            println!("Invalid selection");
-            return;
-        }
-    };
-    let path = match sample_for_speaker[choice - 1] {
-        Some(p) => p,
-        None => {
-            println!("No sample for selected speaker");
-            return;
-        }
-    };
-    match load_wav_samples(path) {
-        Ok(samples) => {
-            let speaker = identify_speaker(&net, &samples);
-            println!("Model prediction: Speaker {}", speaker + 1);
-        }
-        Err(e) => eprintln!("Failed to load test file: {}", e),
     }
 }
