@@ -1,6 +1,6 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossterm::event::{self, Event, KeyCode};
-use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ndarray::{Array1, Array2, Axis};
 use rand::Rng;
 use rodio;
@@ -364,7 +364,7 @@ pub fn live_mic_stream(net: Arc<Mutex<SimpleNeuralNet>>) -> Result<(), Box<dyn E
         .default_output_device()
         .ok_or("No output device available")?;
     let (_out_stream, handle) = rodio::OutputStream::try_from_device(&output)?;
-    let sink = rodio::Sink::try_new(&handle)?;
+    let sink = Arc::new(rodio::Sink::try_new(&handle)?);
     let sink_cb = sink.clone();
 
     let sample_rate = SAMPLE_RATE;
