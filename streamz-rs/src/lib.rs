@@ -20,6 +20,7 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use once_cell::sync::Lazy;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
 pub const WINDOW_SIZE: usize = 800;
@@ -33,6 +34,21 @@ pub const FEATURE_SIZE: usize = if WITH_DELTAS {
 };
 /// Default dropout probability applied during training.
 pub const DEFAULT_DROPOUT: f32 = 0.2;
+
+/// Whether WAV caching is enabled. This can be toggled at runtime via
+/// [`set_wav_cache_enabled`]. Caching is enabled by default so that the
+/// same files are not repeatedly converted.
+static WAV_CACHE_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Enable or disable writing WAV cache files.
+pub fn set_wav_cache_enabled(enabled: bool) {
+    WAV_CACHE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Returns `true` if WAV caching is currently enabled.
+pub fn wav_cache_enabled() -> bool {
+    WAV_CACHE_ENABLED.load(Ordering::Relaxed)
+}
 
 /// Shared pool of resamplers keyed by input sample rate.
 static RESAMPLERS: Lazy<Mutex<HashMap<u32, Arc<Mutex<FftFixedInOut<f32>>>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
@@ -324,7 +340,6 @@ pub fn load_mp3_samples(path: &str) -> Result<(Vec<i16>, u32, usize), Box<dyn Er
 pub fn load_audio_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
     if path.to_ascii_lowercase().ends_with(".mp3") {
         let cache_dir = Path::new("cache");
-        std::fs::create_dir_all(cache_dir)?;
         let file_stem = Path::new(path)
             .file_stem()
             .unwrap_or_default()
@@ -337,22 +352,25 @@ pub fn load_audio_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
                 .map_err(|e| Box::<dyn Error>::from(e));
         }
 
-        let (_, resampled) = load_and_resample_file(path).map_err(|e| Box::<dyn Error>::from(e))?;
+        let (_, resampled) =
+            load_and_resample_file(path).map_err(|e| Box::<dyn Error>::from(e))?;
 
-        // Save WAV to cache
-        let mut writer = hound::WavWriter::create(
-            &cached_path,
-            hound::WavSpec {
-                channels: 1,
-                sample_rate: DEFAULT_SAMPLE_RATE,
-                bits_per_sample: 16,
-                sample_format: hound::SampleFormat::Int,
-            },
-        )?;
-        for sample in &resampled {
-            writer.write_sample(*sample)?;
+        if wav_cache_enabled() {
+            let _ = std::fs::create_dir_all(cache_dir);
+            let mut writer = hound::WavWriter::create(
+                &cached_path,
+                hound::WavSpec {
+                    channels: 1,
+                    sample_rate: DEFAULT_SAMPLE_RATE,
+                    bits_per_sample: 16,
+                    sample_format: hound::SampleFormat::Int,
+                },
+            )?;
+            for sample in &resampled {
+                writer.write_sample(*sample)?;
+            }
+            writer.finalize()?;
         }
-        writer.finalize()?;
 
         Ok(resampled)
     } else {

@@ -7,7 +7,8 @@ use std::path::Path;
 use streamz_rs::{
     compute_speaker_embeddings, identify_speaker_cosine, identify_speaker_with_threshold,
     load_and_resample_file, load_audio_samples, pretrain_network, train_from_files,
-    batch_resample, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
+    batch_resample, set_wav_cache_enabled, wav_cache_enabled, SimpleNeuralNet,
+    DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
 };
 use std::collections::HashMap;
 
@@ -147,6 +148,8 @@ fn main() {
     let mut burn_in_limit: Option<usize> = None;
     let mut max_speakers: Option<usize> = None;
     let eval_mode = args.iter().any(|a| a == "--eval");
+    let no_cache_wav = args.iter().any(|a| a == "--no-cache-wav");
+    set_wav_cache_enabled(!no_cache_wav);
     if let Some(idx) = args.iter().position(|a| a == "--threshold") {
         if let Some(val) = args.get(idx + 1) {
             match val.parse::<f32>() {
@@ -209,8 +212,10 @@ fn main() {
         return;
     }
 
-    // Convert all MP3 files to cached WAVs before proceeding
-    precache_mp3_files(&mut train_files);
+    // Convert all MP3 files to cached WAVs before proceeding when enabled
+    if wav_cache_enabled() {
+        precache_mp3_files(&mut train_files);
+    }
 
     // Decode and resample all files in parallel once
     let path_list: Vec<String> = train_files.iter().map(|(p, _)| p.clone()).collect();
