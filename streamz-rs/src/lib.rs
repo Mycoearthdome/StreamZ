@@ -9,8 +9,8 @@ use ndarray::{s, Array1, Array2, Axis};
 use ndarray_npy::{read_npy, write_npy, NpzReader, NpzWriter};
 use rand::seq::SliceRandom;
 use rand::Rng;
-use rustdct::DctPlanner;
-use rustfft::{num_complex::Complex, FftPlanner};
+use rustdct::{DctPlanner, TransformType2And3};
+use rustfft::{num_complex::Complex, Fft, FftPlanner};
 use std::io::BufReader;
 // use rodio;
 use rubato::{FftFixedInOut, Resampler};
@@ -176,6 +176,16 @@ fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
     let mut dct_planner = DctPlanner::<f32>::new();
     let dct = dct_planner.plan_dct2(N_MELS);
 
+    window_samples_with_plan(samples, &mel_filters, &fft, &dct)
+}
+
+/// Split samples into windows using precomputed transform plans.
+fn window_samples_with_plan(
+    samples: &[i16],
+    mel_filters: &[Vec<f32>],
+    fft: &Arc<dyn Fft<f32>>,
+    dct: &Arc<dyn TransformType2And3<f32>>,
+) -> Vec<Vec<f32>> {
     let mut buffer = vec![Complex::<f32>::new(0.0, 0.0); WINDOW_SIZE];
     let mut base = Vec::new();
 
@@ -243,9 +253,23 @@ pub fn pretrain_network(
     let mut rng = rand::thread_rng();
     let mut total_loss = 0.0f32;
     let mut count = 0usize;
+    let mel_filters = mel::<f32>(
+        DEFAULT_SAMPLE_RATE as usize,
+        WINDOW_SIZE,
+        Some(N_MELS),
+        None,
+        None,
+        false,
+        NormalizationFactor::One,
+    );
+    let mut fft_planner = FftPlanner::<f32>::new();
+    let fft = fft_planner.plan_fft_forward(WINDOW_SIZE);
+    let mut dct_planner = DctPlanner::<f32>::new();
+    let dct = dct_planner.plan_dct2(N_MELS);
+
     for _ in 0..epochs {
         let aug_samples = augment(samples);
-        let mut windows = window_samples(&aug_samples);
+        let mut windows = window_samples_with_plan(&aug_samples, &mel_filters, &fft, &dct);
         windows.shuffle(&mut rng);
         for chunk in windows.chunks(batch_size.max(1)) {
             let mut batch = Vec::with_capacity(chunk.len());
