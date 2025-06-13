@@ -1,18 +1,21 @@
 use hound;
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use streamz_rs::{
-    compute_speaker_embeddings, identify_speaker_cosine, identify_speaker_with_threshold,
-    load_and_resample_file, load_audio_samples, pretrain_network, train_from_files,
-    batch_resample, set_wav_cache_enabled, wav_cache_enabled, SimpleNeuralNet,
-    FeatureExtractor, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
+use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc, Mutex,
 };
-use rayon::prelude::*;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, atomic::{AtomicUsize, AtomicBool, Ordering}};
+use streamz_rs::{
+    batch_resample, compute_speaker_embeddings, identify_speaker_cosine,
+    identify_speaker_with_threshold, load_and_resample_file, load_audio_samples, pretrain_network,
+    set_wav_cache_enabled, train_from_files, wav_cache_enabled, FeatureExtractor, SimpleNeuralNet,
+    DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
+};
 
 const MODEL_PATH: &str = "model.npz";
 const TRAIN_FILE_LIST: &str = "train_files.txt";
@@ -296,7 +299,12 @@ fn main() {
         for (path, class) in &eval_set {
             match load_audio_samples(path) {
                 Ok(samples) => {
-                    match identify_speaker_with_threshold(&net, &samples, conf_threshold, &extractor) {
+                    match identify_speaker_with_threshold(
+                        &net,
+                        &samples,
+                        conf_threshold,
+                        &extractor,
+                    ) {
                         Some(pred) => {
                             if pred == *class {
                                 tp += 1;
@@ -418,17 +426,12 @@ fn main() {
             let mut net = net_arc.lock().unwrap();
             let mut embeds = embeddings.lock().unwrap();
             let count = loss_count.load(Ordering::SeqCst);
-            let dynamic_threshold = if count < 50 {
-                0.95
-            } else {
-                conf_threshold
-            };
+            let dynamic_threshold = if count < 50 { 0.95 } else { conf_threshold };
 
             if let Some(label) = *class {
                 // Known speaker: supervised training
                 let sz = net.output_size();
                 let loss = pretrain_network(
-                    &extractor,
                     &mut net,
                     samples,
                     label,
@@ -437,6 +440,7 @@ fn main() {
                     0.01,
                     DROPOUT_PROB,
                     BATCH_SIZE,
+                    &extractor,
                 );
                 *total_loss.lock().unwrap() += loss;
                 loss_count.fetch_add(1, Ordering::SeqCst);
@@ -455,7 +459,6 @@ fn main() {
                     *class = Some(pred);
                     let sz = net.output_size();
                     let loss = pretrain_network(
-                        &extractor,
                         &mut net,
                         samples,
                         pred,
@@ -464,6 +467,7 @@ fn main() {
                         0.01,
                         DROPOUT_PROB,
                         BATCH_SIZE,
+                        &extractor,
                     );
                     *total_loss.lock().unwrap() += loss;
                     loss_count.fetch_add(1, Ordering::SeqCst);
@@ -476,7 +480,6 @@ fn main() {
                     *class = Some(new_label);
                     let sz = net.output_size();
                     let loss = pretrain_network(
-                        &extractor,
                         &mut net,
                         samples,
                         new_label,
@@ -485,6 +488,7 @@ fn main() {
                         0.01,
                         DROPOUT_PROB,
                         BATCH_SIZE,
+                        &extractor,
                     );
                     *total_loss.lock().unwrap() += loss;
                     loss_count.fetch_add(1, Ordering::SeqCst);
