@@ -24,6 +24,8 @@ const TRAIN_EPOCHS: usize = 15;
 const DROPOUT_PROB: f32 = streamz_rs::DEFAULT_DROPOUT;
 /// Number of feature windows per training batch.
 const BATCH_SIZE: usize = 8;
+/// Recompute speaker embeddings after this many training samples.
+const EMBED_UPDATE_INTERVAL: usize = 20;
 
 fn load_train_files(path: &str) -> Vec<(String, Option<usize>)> {
     if let Ok(content) = fs::read_to_string(path) {
@@ -320,8 +322,7 @@ fn main() {
         match result {
             Ok((_, _, samples)) => {
                 let progress = (loss_count as f32 / burn_in_limit as f32).clamp(0.0, 1.0);
-                let dynamic_threshold =
-                    conf_threshold + (0.95 - conf_threshold) * (1.0 - progress);
+                let dynamic_threshold = conf_threshold + (0.95 - conf_threshold) * (1.0 - progress);
                 if let Some(label) = *class {
                     let sz = net.output_size();
                     let lr = 0.01 * (0.99f32).powi(loss_count as i32);
@@ -338,6 +339,9 @@ fn main() {
                     total_loss += loss;
                     loss_count += 1;
                     net.record_training_file(label, path);
+                    if loss_count % EMBED_UPDATE_INTERVAL == 0 {
+                        embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
+                    }
                 } else if let Some(pred) =
                     identify_speaker_cosine(&net, &embeddings, &samples, dynamic_threshold)
                 {
@@ -357,7 +361,9 @@ fn main() {
                     total_loss += loss;
                     loss_count += 1;
                     net.record_training_file(pred, path);
-                    embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
+                    if loss_count % EMBED_UPDATE_INTERVAL == 0 {
+                        embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
+                    }
                 } else if net.output_size() < max_speakers {
                     net.add_output_class();
                     let new_label = net.output_size() - 1;
@@ -377,7 +383,9 @@ fn main() {
                     total_loss += loss;
                     loss_count += 1;
                     net.record_training_file(new_label, path);
-                    embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
+                    if loss_count % EMBED_UPDATE_INTERVAL == 0 {
+                        embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
+                    }
                 } else {
                     eprintln!("Skipping {}: speaker limit {} reached", path, max_speakers);
                 }
