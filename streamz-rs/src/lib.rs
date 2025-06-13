@@ -127,33 +127,37 @@ fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
     let mut buffer = vec![Complex::<f32>::new(0.0, 0.0); WINDOW_SIZE];
     let mut base = Vec::new();
 
-    for chunk in samples
-        .chunks(WINDOW_SIZE)
-        .filter(|c| c.len() == WINDOW_SIZE)
-    {
-        for (i, &val) in chunk.iter().enumerate() {
-            buffer[i] = Complex::new(i16_to_f32(val), 0.0);
-        }
-        fft.process(&mut buffer);
-        let mags: Vec<f32> = buffer
-            .iter()
-            .take(WINDOW_SIZE / 2 + 1)
-            .map(|c| c.norm_sqr())
-            .collect();
-
-        let mut mel_energies = vec![0.0f32; N_MELS];
-        for (i, filt) in mel_filters.iter().enumerate() {
-            let mut sum = 0.0f32;
-            for (j, &w) in filt.iter().enumerate() {
-                sum += w * mags[j];
+    let step = WINDOW_SIZE / 2;
+    if samples.len() >= WINDOW_SIZE {
+        let mut start = 0;
+        while start + WINDOW_SIZE <= samples.len() {
+            let chunk = &samples[start..start + WINDOW_SIZE];
+            for (i, &val) in chunk.iter().enumerate() {
+                buffer[i] = Complex::new(i16_to_f32(val), 0.0);
             }
-            mel_energies[i] = (sum.max(1e-12)).ln();
-        }
+            fft.process(&mut buffer);
+            let mags: Vec<f32> = buffer
+                .iter()
+                .take(WINDOW_SIZE / 2 + 1)
+                .map(|c| c.norm_sqr())
+                .collect();
 
-        let mut coeffs = mel_energies;
-        dct.process_dct2(&mut coeffs);
-        coeffs.truncate(MFCC_SIZE);
-        base.push(coeffs);
+            let mut mel_energies = vec![0.0f32; N_MELS];
+            for (i, filt) in mel_filters.iter().enumerate() {
+                let mut sum = 0.0f32;
+                for (j, &w) in filt.iter().enumerate() {
+                    sum += w * mags[j];
+                }
+                mel_energies[i] = (sum.max(1e-12)).ln();
+            }
+
+            let mut coeffs = mel_energies;
+            dct.process_dct2(&mut coeffs);
+            coeffs.truncate(MFCC_SIZE);
+            base.push(coeffs);
+
+            start += step;
+        }
     }
 
     let deltas = add_deltas(&base);
