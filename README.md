@@ -40,7 +40,7 @@ unlabelled.mp3
 Run the classifier:
 
 ```bash
-./target/release/StreamZ
+./target/release/StreamZ [--burn-in-limit <n>] [--max-speakers <n>]
 ```
 
 During the run every file listed in `train_files.txt` is processed.  If a line lacks a speaker label the program will attempt to match it against previously learned voices and will append the chosen label to the file.  Newly discovered speakers are added to the model automatically.  The updated model and list of files are written back to disk at the end of the run.
@@ -52,6 +52,11 @@ During the run every file listed in `train_files.txt` is processed.  If a line l
 - You can adjust the confidence threshold for matching existing speakers using
   `--threshold <value>`. Lower values (e.g. `0.5`) make the program more willing
   to reuse a known speaker label.
+- Use `--burn-in-limit <n>` to specify how many files are treated as an
+  early burn-in phase with a higher matching threshold. By default around 20%
+  of the dataset (between 10 and 50 files) is used.
+- `--max-speakers <n>` prevents unbounded growth of speaker classes. The
+  default limit is the current number of speakers plus ten.
 
 ## Threaded Components
 
