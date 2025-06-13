@@ -768,26 +768,35 @@ pub fn identify_speaker_list(net: &SimpleNeuralNet, sample: &[i16], threshold: f
     pairs.into_iter().map(|(i, _)| i).collect()
 }
 
-/// Compute the average embedding vector for an audio sample
+/// Compute a robust embedding vector for an audio sample.
+///
+/// Averaging all window embeddings can flatten subtle vocal cues. This
+/// implementation computes the median value per dimension across all
+/// windows instead.
 pub fn extract_embedding(net: &SimpleNeuralNet, sample: &[i16]) -> Vec<f32> {
-    let mut sum = vec![0.0f32; net.output_size()];
-    let mut count = 0f32;
+    let mut wins = Vec::new();
     for win in window_samples(sample) {
-        let out = net.forward(&win);
-        for (i, v) in out.iter().enumerate() {
-            if i < sum.len() {
-                sum[i] += *v;
-            }
-        }
-        count += 1.0;
+        wins.push(net.forward(&win));
     }
-    if count > 0.0 {
-        for v in &mut sum {
-            *v /= count;
-        }
+
+    if wins.is_empty() {
+        return vec![0.0; net.output_size()];
     }
-    normalize(&mut sum);
-    sum
+
+    let mut emb = vec![0.0f32; net.output_size()];
+    for i in 0..net.output_size() {
+        let mut vals: Vec<f32> = wins.iter().map(|v| v[i]).collect();
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mid = vals.len() / 2;
+        emb[i] = if vals.len() % 2 == 0 {
+            (vals[mid - 1] + vals[mid]) / 2.0
+        } else {
+            vals[mid]
+        };
+    }
+
+    normalize(&mut emb);
+    emb
 }
 
 /// Calculate cosine similarity between two embedding vectors
