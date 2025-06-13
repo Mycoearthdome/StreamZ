@@ -5,8 +5,8 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use streamz_rs::{
-    identify_speaker_with_threshold, load_audio_samples, pretrain_network, train_from_files,
-    SimpleNeuralNet, FEATURE_SIZE,
+    compute_speaker_embeddings, identify_speaker_cosine, identify_speaker_with_threshold,
+    load_audio_samples, pretrain_network, train_from_files, SimpleNeuralNet, FEATURE_SIZE,
 };
 
 const MODEL_PATH: &str = "model.npz";
@@ -278,10 +278,12 @@ fn main() {
 
     let mut total_loss = 0.0f32;
     let mut loss_count = 0usize;
+    let mut embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
     for ((path, class), result) in train_files.iter_mut().zip(preload) {
         pb.set_message(path.to_string());
         match result {
             Ok((_, _, samples)) => {
+                let dynamic_threshold = if loss_count < 50 { 0.95 } else { conf_threshold };
                 if let Some(label) = *class {
                     let sz = net.output_size();
                     let loss = pretrain_network(
@@ -298,7 +300,7 @@ fn main() {
                     loss_count += 1;
                     net.record_training_file(label, path);
                 } else if let Some(pred) =
-                    identify_speaker_with_threshold(&net, &samples, conf_threshold)
+                    identify_speaker_cosine(&net, &embeddings, &samples, dynamic_threshold)
                 {
                     *class = Some(pred);
                     let sz = net.output_size();
@@ -315,6 +317,7 @@ fn main() {
                     total_loss += loss;
                     loss_count += 1;
                     net.record_training_file(pred, path);
+                    embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
                 } else {
                     net.add_output_class();
                     let new_label = net.output_size() - 1;
@@ -333,6 +336,7 @@ fn main() {
                     total_loss += loss;
                     loss_count += 1;
                     net.record_training_file(new_label, path);
+                    embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
                 }
                 if let Err(e) = net.save(MODEL_PATH) {
                     eprintln!("Failed to save model: {}", e);
@@ -365,4 +369,8 @@ fn main() {
     }
     let processed_speakers = count_speakers(&train_files);
     println!("Processed {} speakers in this batch.", processed_speakers);
+    println!("Number of speakers discovered: {}", net.output_size());
+    for (i, files) in net.file_lists().iter().enumerate() {
+        println!("Speaker {}: {} samples", i, files.len());
+    }
 }

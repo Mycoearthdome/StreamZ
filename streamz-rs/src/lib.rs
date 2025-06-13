@@ -446,6 +446,11 @@ impl SimpleNeuralNet {
         }
     }
 
+    /// Access the list of training files for each speaker.
+    pub fn file_lists(&self) -> &[Vec<String>] {
+        &self.file_lists
+    }
+
     /// Forward pass on a slice of f32 values
     pub fn forward(&self, bits: &[f32]) -> Vec<f32> {
         let x = Array1::from_vec(bits.to_vec());
@@ -834,12 +839,37 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
 /// Compute an average embedding vector for every known speaker.
 ///
-/// This functionality has been removed in favour of using the network's
-/// softmax output directly for speaker identification. The function now
-/// simply returns `None` so existing callers compile without needing to
-/// handle errors.
-pub fn compute_speaker_embeddings(_net: &SimpleNeuralNet) -> Option<Vec<Vec<f32>>> {
-    None
+/// The returned vectors are normalised to unit length so they can be
+/// compared using cosine similarity. If any speaker does not yet have
+/// recorded samples, a zero vector of the appropriate size will be
+/// returned for that entry.
+pub fn compute_speaker_embeddings(net: &SimpleNeuralNet) -> Option<Vec<Vec<f32>>> {
+    let mut speaker_embeds = Vec::with_capacity(net.output_size());
+    for files in net.file_lists.iter().take(net.output_size()) {
+        let mut embeds = Vec::new();
+        for path in files {
+            if let Ok(samples) = load_audio_samples(path) {
+                let emb = extract_embedding(net, &samples);
+                embeds.push(emb);
+            }
+        }
+        if embeds.is_empty() {
+            speaker_embeds.push(vec![0.0; net.embedding_size()]);
+        } else {
+            let mut avg = vec![0.0f32; net.embedding_size()];
+            for emb in &embeds {
+                for (i, v) in emb.iter().enumerate() {
+                    avg[i] += *v;
+                }
+            }
+            for v in &mut avg {
+                *v /= embeds.len() as f32;
+            }
+            normalize(&mut avg);
+            speaker_embeds.push(avg);
+        }
+    }
+    Some(speaker_embeds)
 }
 
 /// Identify a speaker by comparing an embedding against known speaker
@@ -847,9 +877,22 @@ pub fn compute_speaker_embeddings(_net: &SimpleNeuralNet) -> Option<Vec<Vec<f32>
 /// similarity exceeds `threshold`.
 pub fn identify_speaker_cosine(
     net: &SimpleNeuralNet,
-    _speaker_embeds: &[Vec<f32>],
+    speaker_embeds: &[Vec<f32>],
     sample: &[i16],
     threshold: f32,
 ) -> Option<usize> {
-    identify_speaker_with_threshold(net, sample, threshold)
+    if speaker_embeds.is_empty() {
+        return None;
+    }
+    let emb = extract_embedding(net, sample);
+    let mut best_idx = None;
+    let mut best_val = threshold;
+    for (i, spk) in speaker_embeds.iter().enumerate() {
+        let sim = cosine_similarity(&emb, spk);
+        if sim > best_val {
+            best_val = sim;
+            best_idx = Some(i);
+        }
+    }
+    best_idx
 }
