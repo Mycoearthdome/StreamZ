@@ -7,8 +7,8 @@ use minimp3::{Decoder, Error as Mp3Error, Frame};
 use ndarray::parallel::prelude::*;
 use ndarray::{s, Array1, Array2, Axis};
 use ndarray_npy::{NpzReader, NpzWriter};
-use rand::Rng;
 use rand::seq::SliceRandom;
+use rand::Rng;
 use rustdct::DctPlanner;
 use rustfft::{num_complex::Complex, FftPlanner};
 use std::io::BufReader;
@@ -474,8 +474,6 @@ impl SimpleNeuralNet {
         self.w2.ncols()
     }
 
-
-
     /// Single-step training using cross entropy loss
     pub fn train(&mut self, bits: &[f32], target: &[f32], lr: f32) {
         let x = Array1::from_vec(bits.to_vec());
@@ -558,10 +556,15 @@ impl SimpleNeuralNet {
                 .dot(&delta_out.clone().insert_axis(Axis(0)));
             grad_b3 += &delta_out;
             let delta_h2 = delta_out.dot(&w3.t()) * h2.mapv(|v| 1.0 - v * v);
-            grad_w2 += &h1.insert_axis(Axis(1)).dot(&delta_h2.clone().insert_axis(Axis(0)));
+            grad_w2 += &h1
+                .insert_axis(Axis(1))
+                .dot(&delta_h2.clone().insert_axis(Axis(0)));
             grad_b2 += &delta_h2;
-            let delta_h1 = delta_h2.dot(&self.w2.t()) * h1_pre.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
-            grad_w1 += &x.insert_axis(Axis(1)).dot(&delta_h1.clone().insert_axis(Axis(0)));
+            let delta_h1 =
+                delta_h2.dot(&self.w2.t()) * h1_pre.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
+            grad_w1 += &x
+                .insert_axis(Axis(1))
+                .dot(&delta_h1.clone().insert_axis(Axis(0)));
             grad_b1 += &delta_h1;
         }
 
@@ -830,40 +833,13 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// Compute an average embedding vector for every known speaker.
-/// Each speaker's embedding is the mean of embeddings for all recorded
-/// training files belonging to that speaker. Missing or unreadable files
-/// are skipped.
-pub fn compute_speaker_embeddings(net: &SimpleNeuralNet) -> Result<Vec<Vec<f32>>, Box<dyn Error>> {
-    let embeds: Vec<Vec<f32>> = net.file_lists[..net.output_size()]
-        .par_iter()
-        .map(|files| {
-            let mut sum = vec![0.0f32; net.embedding_size()];
-            let mut count = 0f32;
-            for path in files {
-                if let Ok(samples) = load_audio_samples(path) {
-                    let emb = extract_embedding(net, &samples);
-                    for (i, v) in emb.iter().enumerate() {
-                        sum[i] += *v;
-                    }
-                    count += 1.0;
-                }
-            }
-            if count > 0.0 {
-                for v in &mut sum {
-                    *v /= count;
-                }
-            }
-            normalize(&mut sum);
-            sum
-        })
-        .collect();
-    for (i, vec_i) in embeds.iter().enumerate() {
-        for (j, vec_j) in embeds.iter().enumerate() {
-            let sim = cosine_similarity(vec_i, vec_j);
-            println!("Similarity between speaker {i} and {j} = {:.4}", sim);
-        }
-    }
-    Ok(embeds)
+///
+/// This functionality has been removed in favour of using the network's
+/// softmax output directly for speaker identification. The function now
+/// simply returns `None` so existing callers compile without needing to
+/// handle errors.
+pub fn compute_speaker_embeddings(_net: &SimpleNeuralNet) -> Option<Vec<Vec<f32>>> {
+    None
 }
 
 /// Identify a speaker by comparing an embedding against known speaker
@@ -871,23 +847,9 @@ pub fn compute_speaker_embeddings(net: &SimpleNeuralNet) -> Result<Vec<Vec<f32>>
 /// similarity exceeds `threshold`.
 pub fn identify_speaker_cosine(
     net: &SimpleNeuralNet,
-    speaker_embeds: &[Vec<f32>],
+    _speaker_embeds: &[Vec<f32>],
     sample: &[i16],
     threshold: f32,
 ) -> Option<usize> {
-    if speaker_embeds.is_empty() {
-        return None;
-    }
-    let emb = extract_embedding(net, sample);
-    let (best_idx, best_val) = speaker_embeds
-        .par_iter()
-        .enumerate()
-        .map(|(i, ref_vec)| (i, cosine_similarity(ref_vec, &emb)))
-        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-        .unwrap();
-    if best_val >= threshold {
-        Some(best_idx)
-    } else {
-        None
-    }
+    identify_speaker_with_threshold(net, sample, threshold)
 }
