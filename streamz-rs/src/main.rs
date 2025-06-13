@@ -10,8 +10,9 @@ use streamz_rs::{
     batch_resample, set_wav_cache_enabled, wav_cache_enabled, SimpleNeuralNet,
     DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
 };
+use rayon::prelude::*;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::{AtomicUsize, AtomicBool, Ordering}};
 
 const MODEL_PATH: &str = "model.npz";
 const TRAIN_FILE_LIST: &str = "train_files.txt";
@@ -396,109 +397,119 @@ fn main() {
             .unwrap(),
     );
 
-    let mut total_loss = 0.0f32;
-    let mut loss_count = 0usize;
-    let mut embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
-    let mut update_embeddings = true;
-    let mut _processed = 0;
+    let net_arc = Arc::new(Mutex::new(net));
+    let audio_arc = Arc::new(audio_map);
+    let pb_arc = Arc::new(pb);
+    let total_loss = Arc::new(Mutex::new(0.0f32));
+    let loss_count = Arc::new(AtomicUsize::new(0));
+    let embeddings = Arc::new(Mutex::new({
+        let guard = net_arc.lock().unwrap();
+        compute_speaker_embeddings(&guard).unwrap_or_default()
+    }));
+    let update_embeddings = Arc::new(AtomicBool::new(true));
 
-    for (path, class) in train_files.iter_mut() {
-        pb.set_message(path.to_string());
+    train_files.par_iter_mut().for_each(|(path, class)| {
+        pb_arc.set_message(path.to_string());
 
-        if let Some(samples) = audio_map.get(path) {
-            let dynamic_threshold = if loss_count < 50 {
+        if let Some(samples) = audio_arc.get(path) {
+            let mut net = net_arc.lock().unwrap();
+            let mut embeds = embeddings.lock().unwrap();
+            let count = loss_count.load(Ordering::SeqCst);
+            let dynamic_threshold = if count < 50 {
                 0.95
             } else {
                 conf_threshold
             };
 
-                if let Some(label) = *class {
-                    // Known speaker: supervised training
+            if let Some(label) = *class {
+                // Known speaker: supervised training
+                let sz = net.output_size();
+                let loss = pretrain_network(
+                    &mut net,
+                    samples,
+                    label,
+                    sz,
+                    5, // Reduced TRAIN_EPOCHS for speed
+                    0.01,
+                    DROPOUT_PROB,
+                    BATCH_SIZE,
+                );
+                *total_loss.lock().unwrap() += loss;
+                loss_count.fetch_add(1, Ordering::SeqCst);
+                net.record_training_file(label, path);
+                update_embeddings.store(true, Ordering::SeqCst);
+            } else {
+                // Unlabelled: try to match known speaker
+                if update_embeddings.load(Ordering::SeqCst) || embeds.is_empty() {
+                    *embeds = compute_speaker_embeddings(&net).unwrap_or_default();
+                    update_embeddings.store(false, Ordering::SeqCst);
+                }
+
+                if let Some(pred) =
+                    identify_speaker_cosine(&net, &embeds, samples, dynamic_threshold)
+                {
+                    *class = Some(pred);
                     let sz = net.output_size();
                     let loss = pretrain_network(
                         &mut net,
                         samples,
-                        label,
+                        pred,
                         sz,
-                        5, // Reduced TRAIN_EPOCHS for speed
+                        5,
                         0.01,
                         DROPOUT_PROB,
                         BATCH_SIZE,
                     );
-                    total_loss += loss;
-                    loss_count += 1;
-                    net.record_training_file(label, path);
-                    update_embeddings = true;
+                    *total_loss.lock().unwrap() += loss;
+                    loss_count.fetch_add(1, Ordering::SeqCst);
+                    net.record_training_file(pred, path);
+                    update_embeddings.store(true, Ordering::SeqCst);
                 } else {
-                    // Unlabelled: try to match known speaker
-                    if update_embeddings || embeddings.is_empty() {
-                        embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
-                        update_embeddings = false;
-                    }
-
-                    if let Some(pred) =
-                        identify_speaker_cosine(&net, &embeddings, samples, dynamic_threshold)
-                    {
-                        *class = Some(pred);
-                        let sz = net.output_size();
-                        let loss = pretrain_network(
-                            &mut net,
-                            samples,
-                            pred,
-                            sz,
-                            5,
-                            0.01,
-                            DROPOUT_PROB,
-                            BATCH_SIZE,
-                        );
-                        total_loss += loss;
-                        loss_count += 1;
-                        net.record_training_file(pred, path);
-                        update_embeddings = true;
-                    } else {
-                        // New speaker: expand class
-                        net.add_output_class();
-                        let new_label = net.output_size() - 1;
-                        *class = Some(new_label);
-                        let sz = net.output_size();
-                        let loss = pretrain_network(
-                            &mut net,
-                            samples,
-                            new_label,
-                            sz,
-                            5,
-                            0.01,
-                            DROPOUT_PROB,
-                            BATCH_SIZE,
-                        );
-                        total_loss += loss;
-                        loss_count += 1;
-                        net.record_training_file(new_label, path);
-                        update_embeddings = true;
-                    }
+                    // New speaker: expand class
+                    net.add_output_class();
+                    let new_label = net.output_size() - 1;
+                    *class = Some(new_label);
+                    let sz = net.output_size();
+                    let loss = pretrain_network(
+                        &mut net,
+                        samples,
+                        new_label,
+                        sz,
+                        5,
+                        0.01,
+                        DROPOUT_PROB,
+                        BATCH_SIZE,
+                    );
+                    *total_loss.lock().unwrap() += loss;
+                    loss_count.fetch_add(1, Ordering::SeqCst);
+                    net.record_training_file(new_label, path);
+                    update_embeddings.store(true, Ordering::SeqCst);
                 }
+            }
 
-                // Save periodically
-                if loss_count % 10 == 0 {
-                    if let Err(e) = net.save(MODEL_PATH) {
-                        eprintln!("Failed to save model: {}", e);
-                    }
-                    embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
+            // Save periodically
+            if loss_count.load(Ordering::SeqCst) % 10 == 0 {
+                if let Err(e) = net.save(MODEL_PATH) {
+                    eprintln!("Failed to save model: {}", e);
                 }
+                *embeds = compute_speaker_embeddings(&net).unwrap_or_default();
+            }
         } else {
             eprintln!("Missing audio for {}", path);
         }
 
-        pb.inc(1);
-        _processed += 1;
-    }
+        pb_arc.inc(1);
+    });
 
-    pb.finish_and_clear();
-    if loss_count > 0 {
-        println!(
-            "Average training loss: {:.4}",
-            total_loss / loss_count as f32
-        );
+    pb_arc.finish_and_clear();
+    let final_loss = *total_loss.lock().unwrap();
+    let count = loss_count.load(Ordering::SeqCst);
+    let mut net = match Arc::try_unwrap(net_arc) {
+        Ok(m) => m.into_inner().unwrap(),
+        Err(_) => panic!("Arc has other references"),
+    };
+    if count > 0 {
+        println!("Average training loss: {:.4}", final_loss / count as f32);
     }
 
     if let Err(e) = net.save(MODEL_PATH) {
