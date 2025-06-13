@@ -283,16 +283,21 @@ fn main() {
         pb.set_message(path.to_string());
         match result {
             Ok((_, _, samples)) => {
-                let dynamic_threshold = if loss_count < 50 { 0.95 } else { conf_threshold };
+                let dynamic_threshold = if loss_count < 50 {
+                    0.95
+                } else {
+                    conf_threshold
+                };
                 if let Some(label) = *class {
                     let sz = net.output_size();
+                    let lr = 0.01 * (0.99f32).powi(loss_count as i32);
                     let loss = pretrain_network(
                         &mut net,
                         &samples,
                         label,
                         sz,
                         TRAIN_EPOCHS,
-                        0.01,
+                        lr,
                         DROPOUT_PROB,
                         BATCH_SIZE,
                     );
@@ -304,13 +309,14 @@ fn main() {
                 {
                     *class = Some(pred);
                     let sz = net.output_size();
+                    let lr = 0.01 * (0.99f32).powi(loss_count as i32);
                     let loss = pretrain_network(
                         &mut net,
                         &samples,
                         pred,
                         sz,
                         TRAIN_EPOCHS,
-                        0.01,
+                        lr,
                         DROPOUT_PROB,
                         BATCH_SIZE,
                     );
@@ -323,13 +329,14 @@ fn main() {
                     let new_label = net.output_size() - 1;
                     *class = Some(new_label);
                     let sz = net.output_size();
+                    let lr = 0.01 * (0.99f32).powi(loss_count as i32);
                     let loss = pretrain_network(
                         &mut net,
                         &samples,
                         new_label,
                         sz,
                         TRAIN_EPOCHS,
-                        0.01,
+                        lr,
                         DROPOUT_PROB,
                         BATCH_SIZE,
                     );
