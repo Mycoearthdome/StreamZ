@@ -2,15 +2,15 @@
 // use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 // use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use hound;
-use std::io::BufReader;
 use mel_filter::{mel, NormalizationFactor};
 use minimp3::{Decoder, Error as Mp3Error, Frame};
+use ndarray::parallel::prelude::*;
 use ndarray::{s, Array1, Array2, Axis};
 use ndarray_npy::{NpzReader, NpzWriter};
 use rand::Rng;
-use rayon::prelude::*;
 use rustdct::DctPlanner;
 use rustfft::{num_complex::Complex, FftPlanner};
+use std::io::BufReader;
 // use rodio;
 use rubato::{FftFixedInOut, Resampler};
 use std::error::Error;
@@ -54,11 +54,11 @@ fn apply_dropout(features: &mut [f32], prob: f32) {
 
 /// Normalize a vector to unit length using the L2 norm
 fn normalize(v: &mut [f32]) {
-    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let view = ndarray::aview1(v);
+    let norm = view.into_par_iter().map(|&x| x * x).sum::<f32>().sqrt();
     if norm > 0.0 {
-        for x in v.iter_mut() {
-            *x /= norm;
-        }
+        let mut view_mut = ndarray::aview_mut1(v);
+        view_mut.par_mapv_inplace(|x| x / norm);
     }
 }
 
@@ -93,7 +93,11 @@ fn add_deltas(mfcc: &[Vec<f32>]) -> Vec<Vec<f32>> {
     let mut out = Vec::with_capacity(mfcc.len());
     for i in 0..mfcc.len() {
         let prev = if i > 0 { &mfcc[i - 1] } else { &mfcc[i] };
-        let next = if i + 1 < mfcc.len() { &mfcc[i + 1] } else { &mfcc[i] };
+        let next = if i + 1 < mfcc.len() {
+            &mfcc[i + 1]
+        } else {
+            &mfcc[i]
+        };
         let mut delta = Vec::with_capacity(MFCC_SIZE);
         for j in 0..MFCC_SIZE {
             delta.push((next[j] - prev[j]) / 2.0);
@@ -197,7 +201,11 @@ pub fn pretrain_network(
             net.train(&feats, &target, lr);
         }
     }
-    if count > 0 { total_loss / count as f32 } else { 0.0 }
+    if count > 0 {
+        total_loss / count as f32
+    } else {
+        0.0
+    }
 }
 
 /// Load all samples from a 16-bit mono WAV file.
@@ -469,7 +477,8 @@ impl SimpleNeuralNet {
             .insert_axis(Axis(1))
             .dot(&delta_h2.clone().insert_axis(Axis(0)));
         let grad_b2 = delta_h2.clone();
-        let delta_h1 = delta_h2.dot(&self.w2.t()) * h1_pre.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
+        let delta_h1 =
+            delta_h2.dot(&self.w2.t()) * h1_pre.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
         let grad_w1 = x
             .insert_axis(Axis(1))
             .dot(&delta_h1.clone().insert_axis(Axis(0)));
