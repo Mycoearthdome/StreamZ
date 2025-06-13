@@ -319,11 +319,9 @@ fn main() {
         pb.set_message(path.to_string());
         match result {
             Ok((_, _, samples)) => {
-                let dynamic_threshold = if loss_count < burn_in_limit {
-                    0.95
-                } else {
-                    conf_threshold
-                };
+                let progress = (loss_count as f32 / burn_in_limit as f32).clamp(0.0, 1.0);
+                let dynamic_threshold =
+                    conf_threshold + (0.95 - conf_threshold) * (1.0 - progress);
                 if let Some(label) = *class {
                     let sz = net.output_size();
                     let lr = 0.01 * (0.99f32).powi(loss_count as i32);
