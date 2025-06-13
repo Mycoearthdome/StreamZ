@@ -846,7 +846,15 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// compared using cosine similarity. If any speaker does not yet have
 /// recorded samples, a zero vector of the appropriate size will be
 /// returned for that entry.
-pub fn compute_speaker_embeddings(net: &SimpleNeuralNet) -> Option<Vec<Vec<f32>>> {
+/// Compute mean and standard deviation embeddings for each speaker.
+///
+/// The returned tuple for each speaker contains `(mean, mean_sim, std_sim)`
+/// where `mean` is the average embedding, `mean_sim` is the mean cosine
+/// similarity of each training embedding to the mean, and `std_sim` is the
+/// standard deviation of those similarities.
+pub fn compute_speaker_embeddings(
+    net: &SimpleNeuralNet,
+) -> Option<Vec<(Vec<f32>, f32, f32)>> {
     let mut speaker_embeds = Vec::with_capacity(net.output_size());
     for files in net.file_lists.iter().take(net.output_size()) {
         let mut embeds = Vec::new();
@@ -857,19 +865,32 @@ pub fn compute_speaker_embeddings(net: &SimpleNeuralNet) -> Option<Vec<Vec<f32>>
             }
         }
         if embeds.is_empty() {
-            speaker_embeds.push(vec![0.0; net.embedding_size()]);
+            speaker_embeds.push((vec![0.0; net.embedding_size()], 0.0, 0.0));
         } else {
-            let mut avg = vec![0.0f32; net.embedding_size()];
+            let mut mean = vec![0.0f32; net.embedding_size()];
             for emb in &embeds {
                 for (i, v) in emb.iter().enumerate() {
-                    avg[i] += *v;
+                    mean[i] += *v;
                 }
             }
-            for v in &mut avg {
+            for v in &mut mean {
                 *v /= embeds.len() as f32;
             }
-            normalize(&mut avg);
-            speaker_embeds.push(avg);
+            normalize(&mut mean);
+
+            let mut sims = Vec::new();
+            for emb in &embeds {
+                sims.push(cosine_similarity(emb, &mean));
+            }
+            let mean_sim = sims.iter().copied().sum::<f32>() / sims.len() as f32;
+            let var = sims
+                .iter()
+                .map(|s| (*s - mean_sim) * (*s - mean_sim))
+                .sum::<f32>()
+                / sims.len() as f32;
+            let std_sim = var.sqrt();
+
+            speaker_embeds.push((mean, mean_sim, std_sim));
         }
     }
     Some(speaker_embeds)
@@ -880,7 +901,7 @@ pub fn compute_speaker_embeddings(net: &SimpleNeuralNet) -> Option<Vec<Vec<f32>>
 /// similarity exceeds `threshold`.
 pub fn identify_speaker_cosine(
     net: &SimpleNeuralNet,
-    speaker_embeds: &[Vec<f32>],
+    speaker_embeds: &[(Vec<f32>, f32, f32)],
     sample: &[i16],
     threshold: f32,
 ) -> Option<usize> {
@@ -890,9 +911,13 @@ pub fn identify_speaker_cosine(
     let emb = extract_embedding(net, sample);
     let mut best_idx = None;
     let mut best_val = threshold;
-    for (i, spk) in speaker_embeds.iter().enumerate() {
-        let sim = cosine_similarity(&emb, spk);
-        if sim > best_val {
+    for (i, (mean, mean_sim, std_sim)) in speaker_embeds.iter().enumerate() {
+        let sim = cosine_similarity(&emb, mean);
+        if sim < (mean_sim - 2.0 * *std_sim) {
+            continue;
+        }
+        let accept_threshold = (mean_sim + *std_sim).max(threshold);
+        if sim >= accept_threshold && sim > best_val {
             best_val = sim;
             best_idx = Some(i);
         }
