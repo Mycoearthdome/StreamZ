@@ -18,7 +18,8 @@ use std::fs::File;
 const DEFAULT_SAMPLE_RATE: u32 = 44100;
 pub const WINDOW_SIZE: usize = 1024;
 const N_MELS: usize = 26;
-pub const FEATURE_SIZE: usize = 13;
+pub const MFCC_SIZE: usize = 13;
+pub const FEATURE_SIZE: usize = MFCC_SIZE * 3;
 /// Default dropout probability applied during training.
 pub const DEFAULT_DROPOUT: f32 = 0.2;
 
@@ -50,6 +51,16 @@ fn apply_dropout(features: &mut [f32], prob: f32) {
     }
 }
 
+/// Normalize a vector to unit length using the L2 norm
+fn normalize(v: &mut [f32]) {
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for x in v.iter_mut() {
+            *x /= norm;
+        }
+    }
+}
+
 /// Convert a raw i16 audio sample to a normalized f32 value in [-1.0, 1.0]
 pub fn i16_to_f32(sample: i16) -> f32 {
     sample as f32 / i16::MAX as f32
@@ -76,6 +87,21 @@ pub fn resample_to_44100(samples: &[i16], from_rate: u32) -> Result<Vec<i16>, Bo
     Ok(result)
 }
 
+/// Compute delta features for a sequence of frames
+fn add_deltas(mfcc: &[Vec<f32>]) -> Vec<Vec<f32>> {
+    let mut out = Vec::with_capacity(mfcc.len());
+    for i in 0..mfcc.len() {
+        let prev = if i > 0 { &mfcc[i - 1] } else { &mfcc[i] };
+        let next = if i + 1 < mfcc.len() { &mfcc[i + 1] } else { &mfcc[i] };
+        let mut delta = Vec::with_capacity(MFCC_SIZE);
+        for j in 0..MFCC_SIZE {
+            delta.push((next[j] - prev[j]) / 2.0);
+        }
+        out.push(delta);
+    }
+    out
+}
+
 /// Split samples into windows and compute MFCC features for each window.
 fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
     let mel_filters = mel::<f32>(
@@ -93,7 +119,7 @@ fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
     let dct = dct_planner.plan_dct2(N_MELS);
 
     let mut buffer = vec![Complex::<f32>::new(0.0, 0.0); WINDOW_SIZE];
-    let mut features = Vec::new();
+    let mut base = Vec::new();
 
     for chunk in samples
         .chunks(WINDOW_SIZE)
@@ -120,8 +146,18 @@ fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
 
         let mut coeffs = mel_energies;
         dct.process_dct2(&mut coeffs);
-        coeffs.truncate(FEATURE_SIZE);
-        features.push(coeffs);
+        coeffs.truncate(MFCC_SIZE);
+        base.push(coeffs);
+    }
+
+    let deltas = add_deltas(&base);
+    let delta2 = add_deltas(&deltas);
+    let mut features = Vec::with_capacity(base.len());
+    for i in 0..base.len() {
+        let mut frame = base[i].clone();
+        frame.extend(&deltas[i]);
+        frame.extend(&delta2[i]);
+        features.push(frame);
     }
 
     features
@@ -136,20 +172,31 @@ pub fn pretrain_network(
     epochs: usize,
     lr: f32,
     dropout: f32,
-) {
+) -> f32 {
     let mut target = vec![0.0f32; num_classes];
     if target_class < num_classes {
         target[target_class] = 1.0;
     }
     let aug_samples = augment(samples);
     let windows = window_samples(&aug_samples);
+    let mut total_loss = 0.0f32;
+    let mut count = 0usize;
     for _ in 0..epochs {
         for win in &windows {
             let mut feats = win.clone();
             apply_dropout(&mut feats, dropout);
+            let out = net.forward(&feats);
+            let loss: f32 = -target
+                .iter()
+                .zip(out.iter())
+                .map(|(t, o)| t * o.max(1e-12).ln())
+                .sum::<f32>();
+            total_loss += loss;
+            count += 1;
             net.train(&feats, &target, lr);
         }
     }
+    if count > 0 { total_loss / count as f32 } else { 0.0 }
 }
 
 /// Load all samples from a 16-bit mono WAV file.
@@ -255,7 +302,7 @@ pub fn train_from_files(
         for _ in 0..epochs {
             match load_audio_samples(path) {
                 Ok(samples) => {
-                    pretrain_network(net, &samples, class, num_speakers, 1, lr, dropout);
+                    let _ = pretrain_network(net, &samples, class, num_speakers, 1, lr, dropout);
                     net.record_training_file(class, path);
                 }
                 Err(e) => {
@@ -660,6 +707,7 @@ pub fn extract_embedding(net: &SimpleNeuralNet, sample: &[i16]) -> Vec<f32> {
             *v /= count;
         }
     }
+    normalize(&mut sum);
     sum
 }
 
@@ -699,6 +747,7 @@ pub fn compute_speaker_embeddings(net: &SimpleNeuralNet) -> Result<Vec<Vec<f32>>
                     *v /= count;
                 }
             }
+            normalize(&mut sum);
             sum
         })
         .collect();
