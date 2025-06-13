@@ -98,26 +98,25 @@ pub fn resample_to_44100(samples: &[i16], from_rate: u32) -> Result<Vec<i16>, Bo
     if from_rate == DEFAULT_SAMPLE_RATE {
         return Ok(samples.to_vec());
     }
-    let chunk_size = 1024;
-    let input: Vec<f32> = samples.iter().map(|&s| i16_to_f32(s)).collect();
+
+    let input: Vec<Vec<f32>> = vec![samples.iter().map(|&s| s as f32 / i16::MAX as f32).collect()];
+    let frames_in = input[0].len();
+    let frames_out = (frames_in * DEFAULT_SAMPLE_RATE as usize) / from_rate as usize;
+    let mut output = vec![vec![0.0f32; frames_out]];
+
     let mut resampler = FftFixedInOut::<f32>::new(
         from_rate as usize,
         DEFAULT_SAMPLE_RATE as usize,
-        chunk_size,
+        1024,
         1,
     )?;
-    let mut result = Vec::new();
-    for chunk in input.chunks(chunk_size) {
-        let mut padded = chunk.to_vec();
-        if padded.len() < chunk_size {
-            padded.resize(chunk_size, 0.0);
-        }
-        let output = resampler.process(&[padded], None)?;
-        for frame in &output[0] {
-            result.push((frame * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16);
-        }
-    }
-    Ok(result)
+
+    resampler.process_into_buffer(&input, &mut output, None)?;
+
+    Ok(output[0]
+        .iter()
+        .map(|&s| (s * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+        .collect())
 }
 
 /// Compute delta features for a sequence of frames
@@ -361,6 +360,50 @@ pub fn audio_metadata(path: &str) -> Result<(u32, u16), Box<dyn Error>> {
         let spec = hound::WavReader::open(path)?.spec();
         Ok((DEFAULT_SAMPLE_RATE, spec.bits_per_sample))
     }
+}
+
+/// Load a file and resample its samples to 44.1kHz.
+/// Returns the filename along with resampled samples.
+pub fn load_and_resample_file(path: &str) -> Result<(String, Vec<i16>), String> {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    match ext.as_str() {
+        "wav" => {
+            let reader = hound::WavReader::open(path).map_err(|e| e.to_string())?;
+            let spec = reader.spec();
+            let samples: Vec<i16> = reader
+                .into_samples::<i16>()
+                .filter_map(Result::ok)
+                .collect();
+            let resampled = resample_to_44100(&samples, spec.sample_rate).map_err(|e| e.to_string())?;
+            Ok((path.to_string(), resampled))
+        }
+        "mp3" => {
+            let (samples, rate, _) = load_mp3_samples(path).map_err(|e| e.to_string())?;
+            let resampled = resample_to_44100(&samples, rate).map_err(|e| e.to_string())?;
+            Ok((path.to_string(), resampled))
+        }
+        _ => Err(format!("Unsupported format: {}", path)),
+    }
+}
+
+/// Load and resample multiple files in parallel.
+pub fn batch_resample(paths: &[String]) -> Vec<(String, Vec<i16>)> {
+    use rayon::prelude::*;
+    paths
+        .par_iter()
+        .filter_map(|p| match load_and_resample_file(p) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                eprintln!("Error in {}: {}", p, e);
+                None
+            }
+        })
+        .collect()
 }
 
 /// Path for cached feature files corresponding to an audio path.
