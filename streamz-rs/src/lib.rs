@@ -209,6 +209,18 @@ impl FeatureExtractor {
     }
 }
 
+thread_local! {
+    static EXTRACTOR_TLS: FeatureExtractor = FeatureExtractor::new();
+}
+
+/// Run a closure with a thread-local `FeatureExtractor` instance.
+pub fn with_thread_extractor<F, R>(f: F) -> R
+where
+    F: FnOnce(&FeatureExtractor) -> R,
+{
+    EXTRACTOR_TLS.with(|ex| f(ex))
+}
+
 /// Split samples into windows using precomputed transform plans.
 fn window_samples_with_plan(
     samples: &[i16],
@@ -558,7 +570,7 @@ pub fn train_from_files(
     lr: f32,
     dropout: f32,
     batch_size: usize,
-    extractor: &FeatureExtractor,
+    _extractor: &FeatureExtractor,
 ) -> Result<(), Box<dyn Error>> {
     use indicatif::{ProgressBar, ProgressStyle};
     use rayon::prelude::*;
@@ -593,17 +605,19 @@ pub fn train_from_files(
         for _ in 0..epochs {
             let lr_scaled = lr * (0.99f32).powi(step.fetch_add(1, Ordering::SeqCst));
             let mut guard = net.lock().unwrap();
-            let _ = pretrain_network(
-                &mut *guard,
-                &samples,
-                class,
-                num_speakers,
-                1,
-                lr_scaled,
-                dropout,
-                batch_size,
-                extractor,
-            );
+            with_thread_extractor(|ext| {
+                let _ = pretrain_network(
+                    &mut *guard,
+                    &samples,
+                    class,
+                    num_speakers,
+                    1,
+                    lr_scaled,
+                    dropout,
+                    batch_size,
+                    ext,
+                );
+            });
             guard.record_training_file(class, path);
         }
 
