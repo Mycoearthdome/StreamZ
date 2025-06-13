@@ -340,7 +340,6 @@ fn main() {
                     loss_count += 1;
                     net.record_training_file(new_label, path);
                 }
-                speaker_embeds = compute_speaker_embeddings(&net).unwrap_or_default();
                 if let Err(e) = net.save(MODEL_PATH) {
                     eprintln!("Failed to save model: {}", e);
                 }
@@ -358,6 +357,10 @@ fn main() {
     if let Err(e) = net.save(MODEL_PATH) {
         eprintln!("Failed to save model: {}", e);
     }
+
+    // Refresh speaker embeddings at the end of the epoch instead of after
+    // every sample to avoid redundant computation.
+    speaker_embeds = compute_speaker_embeddings(&net).unwrap_or_default();
     write_train_files(TRAIN_FILE_LIST, &train_files);
     println!("Updated training file labels:");
     for (p, c) in &train_files {
