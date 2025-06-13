@@ -10,6 +10,7 @@ use streamz_rs::{
     batch_resample, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
 };
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 const MODEL_PATH: &str = "model.npz";
 const TRAIN_FILE_LIST: &str = "train_files.txt";
@@ -256,12 +257,16 @@ fn main() {
             .iter()
             .map(|(p, c)| (p.as_str(), *c))
             .collect();
-        let mut net =
-            SimpleNeuralNet::new(FEATURE_SIZE, 512, 256, count_speakers(&train_files).max(1));
+        let net_arc = Arc::new(Mutex::new(SimpleNeuralNet::new(
+            FEATURE_SIZE,
+            512,
+            256,
+            count_speakers(&train_files).max(1),
+        )));
         if !train_refs.is_empty() {
-            let out_sz = net.output_size();
+            let out_sz = net_arc.lock().unwrap().output_size();
             let _ = train_from_files(
-                &mut net,
+                net_arc.clone(),
                 &train_refs,
                 train_refs.len(),
                 out_sz,
@@ -271,6 +276,10 @@ fn main() {
                 BATCH_SIZE,
             );
         }
+        let mut net = match Arc::try_unwrap(net_arc) {
+            Ok(m) => m.into_inner().unwrap(),
+            Err(_) => panic!("Arc has other references"),
+        };
         let total = eval_set.len();
         let mut correct = 0usize;
         let mut tp = 0usize;
@@ -344,15 +353,20 @@ fn main() {
             num_speakers = 1;
             train_files[0].1 = Some(0);
         }
-        let mut n = SimpleNeuralNet::new(FEATURE_SIZE, 512, 256, num_speakers.max(1));
+        let net_arc = Arc::new(Mutex::new(SimpleNeuralNet::new(
+            FEATURE_SIZE,
+            512,
+            256,
+            num_speakers.max(1),
+        )));
         let train_refs: Vec<(&str, usize)> = train_files
             .iter()
             .filter_map(|(p, c)| c.map(|cls| (p.as_str(), cls)))
             .collect();
         if !train_refs.is_empty() {
-            let out_sz = n.output_size();
+            let out_sz = net_arc.lock().unwrap().output_size();
             if let Err(e) = train_from_files(
-                &mut n,
+                net_arc.clone(),
                 &train_refs,
                 train_files.len(),
                 out_sz,
@@ -364,7 +378,10 @@ fn main() {
                 eprintln!("Training failed: {}", e);
             }
         }
-        n
+        match Arc::try_unwrap(net_arc) {
+            Ok(m) => m.into_inner().unwrap(),
+            Err(_) => panic!("Arc has other references"),
+        }
     };
 
     let pb = ProgressBar::new(train_files.len() as u64);
