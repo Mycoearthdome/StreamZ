@@ -836,6 +836,7 @@ dependencies = [
  "minimp3",
  "ndarray",
  "ndarray-npy",
+ "once_cell",
  "rand",
  "rayon",
  "realfft 0.3.0",

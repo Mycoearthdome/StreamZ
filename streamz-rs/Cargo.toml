@@ -22,6 +22,7 @@ mel_filter = "0.1"
 rubato = "0.13"
 realfft = "0.3"
 rayon = "1.7"
+once_cell = "1"
 
 [[bin]]
 name = "StreamZ"
