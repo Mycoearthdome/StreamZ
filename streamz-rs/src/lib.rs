@@ -32,8 +32,8 @@ pub fn augment(samples: &[i16]) -> Vec<i16> {
     samples
         .iter()
         .map(|&s| {
-            let noise: f32 = rng.gen_range(-0.005..0.005);
-            let gain: f32 = rng.gen_range(0.9..1.1);
+            let noise: f32 = rng.gen_range(-0.001..0.001);
+            let gain: f32 = rng.gen_range(0.98..1.02);
             (s as f32 * gain + noise * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32)
                 as i16
         })
@@ -456,6 +456,20 @@ impl SimpleNeuralNet {
         (exp / sum).to_vec()
     }
 
+    /// Compute an embedding vector from the second hidden layer without the
+    /// final softmax classification step.
+    pub fn embed(&self, bits: &[f32]) -> Vec<f32> {
+        let x = Array1::from_vec(bits.to_vec());
+        let h1 = (x.dot(&self.w1) + &self.b1).mapv(|v| if v > 0.0 { v } else { 0.0 });
+        let h2 = (h1.dot(&self.w2) + &self.b2).mapv(|v| v.tanh());
+        h2.to_vec()
+    }
+
+    /// Dimension of the embedding vector returned by [`embed`].
+    pub fn embedding_size(&self) -> usize {
+        self.w2.ncols()
+    }
+
 
 
     /// Single-step training using cross entropy loss
@@ -776,15 +790,15 @@ pub fn identify_speaker_list(net: &SimpleNeuralNet, sample: &[i16], threshold: f
 pub fn extract_embedding(net: &SimpleNeuralNet, sample: &[i16]) -> Vec<f32> {
     let mut wins = Vec::new();
     for win in window_samples(sample) {
-        wins.push(net.forward(&win));
+        wins.push(net.embed(&win));
     }
 
     if wins.is_empty() {
-        return vec![0.0; net.output_size()];
+        return vec![0.0; net.embedding_size()];
     }
 
-    let mut emb = vec![0.0f32; net.output_size()];
-    for i in 0..net.output_size() {
+    let mut emb = vec![0.0f32; net.embedding_size()];
+    for i in 0..net.embedding_size() {
         let mut vals: Vec<f32> = wins.iter().map(|v| v[i]).collect();
         vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mid = vals.len() / 2;
@@ -819,7 +833,7 @@ pub fn compute_speaker_embeddings(net: &SimpleNeuralNet) -> Result<Vec<Vec<f32>>
     let embeds: Vec<Vec<f32>> = net.file_lists[..net.output_size()]
         .par_iter()
         .map(|files| {
-            let mut sum = vec![0.0f32; net.output_size()];
+            let mut sum = vec![0.0f32; net.embedding_size()];
             let mut count = 0f32;
             for path in files {
                 if let Ok(samples) = load_audio_samples(path) {
@@ -839,6 +853,12 @@ pub fn compute_speaker_embeddings(net: &SimpleNeuralNet) -> Result<Vec<Vec<f32>>
             sum
         })
         .collect();
+    for (i, vec_i) in embeds.iter().enumerate() {
+        for (j, vec_j) in embeds.iter().enumerate() {
+            let sim = cosine_similarity(vec_i, vec_j);
+            println!("Similarity between speaker {i} and {j} = {:.4}", sim);
+        }
+    }
     Ok(embeds)
 }
 
