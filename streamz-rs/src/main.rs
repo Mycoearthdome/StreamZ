@@ -11,10 +11,12 @@ use std::sync::{
     Arc, Mutex,
 };
 use streamz_rs::{
+
     batch_resample, compute_speaker_embeddings, identify_speaker_cosine_feats,
     identify_speaker_with_threshold, load_and_resample_file, load_audio_samples,
     pretrain_from_features, set_wav_cache_enabled, train_from_files, wav_cache_enabled,
     FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
+
 };
 
 const MODEL_PATH: &str = "model.npz";
@@ -426,7 +428,9 @@ fn main() {
     let update_embeddings = Arc::new(AtomicBool::new(true));
 
     train_files.par_iter_mut().for_each(|(path, class)| {
-        pb_arc.set_message(path.to_string());
+        with_thread_extractor(|extractor| {
+            pb_arc.set_message(path.to_string());
+
 
         if let Some(windows) = feats_arc.get(path) {
             let mut net = net_arc.lock().unwrap();
@@ -462,22 +466,28 @@ fn main() {
                     identify_speaker_cosine_feats(&net, &embeds, windows, dynamic_threshold)
                 {
                     *class = Some(pred);
+
                     let sz = net.output_size();
                     let loss = pretrain_from_features(
                         &mut net,
+
                         windows,
                         pred,
+
                         sz,
-                        5,
+                        5, // Reduced TRAIN_EPOCHS for speed
                         0.01,
                         DROPOUT_PROB,
                         BATCH_SIZE,
+
+
                     );
                     *total_loss.lock().unwrap() += loss;
                     loss_count.fetch_add(1, Ordering::SeqCst);
-                    net.record_training_file(pred, path);
+                    net.record_training_file(label, path);
                     update_embeddings.store(true, Ordering::SeqCst);
                 } else {
+
                     // New speaker: expand class
                     net.add_output_class();
                     let new_label = net.output_size() - 1;
@@ -500,18 +510,63 @@ fn main() {
                 }
             }
 
-            // Save periodically
-            if loss_count.load(Ordering::SeqCst) % 10 == 0 {
-                if let Err(e) = net.save(MODEL_PATH) {
-                    eprintln!("Failed to save model: {}", e);
+                    // Unlabelled: try to match known speaker
+                    if update_embeddings.load(Ordering::SeqCst) || embeds.is_empty() {
+                        *embeds = compute_speaker_embeddings(&net, extractor).unwrap_or_default();
+                        update_embeddings.store(false, Ordering::SeqCst);
+                    }
+
+                    if let Some(pred) =
+                        identify_speaker_cosine(&net, &embeds, samples, dynamic_threshold, extractor)
+                    {
+                        *class = Some(pred);
+                        let sz = net.output_size();
+                        let loss = pretrain_network(
+                            &mut net,
+                            samples,
+                            pred,
+                            sz,
+                            5,
+                            0.01,
+                            DROPOUT_PROB,
+                            BATCH_SIZE,
+                            extractor,
+                        );
+                        *total_loss.lock().unwrap() += loss;
+                        loss_count.fetch_add(1, Ordering::SeqCst);
+                        net.record_training_file(pred, path);
+                        update_embeddings.store(true, Ordering::SeqCst);
+                    } else {
+                        // New speaker: expand class
+                        net.add_output_class();
+                        let new_label = net.output_size() - 1;
+                        *class = Some(new_label);
+                        let sz = net.output_size();
+                        let loss = pretrain_network(
+                            &mut net,
+                            samples,
+                            new_label,
+                            sz,
+                            5,
+                            0.01,
+                            DROPOUT_PROB,
+                            BATCH_SIZE,
+                            extractor,
+                        );
+                        *total_loss.lock().unwrap() += loss;
+                        loss_count.fetch_add(1, Ordering::SeqCst);
+                        net.record_training_file(new_label, path);
+                        update_embeddings.store(true, Ordering::SeqCst);
+                    }
                 }
-                *embeds = compute_speaker_embeddings(&net, &extractor).unwrap_or_default();
+
             }
         } else {
             eprintln!("Missing audio for {}", path);
         }
 
-        pb_arc.inc(1);
+            pb_arc.inc(1);
+        });
     });
 
     pb_arc.finish_and_clear();
