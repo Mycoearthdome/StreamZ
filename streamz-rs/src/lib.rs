@@ -13,14 +13,14 @@ use rustdct::{DctPlanner, TransformType2And3};
 use rustfft::{num_complex::Complex, Fft, FftPlanner};
 use std::io::BufReader;
 // use rodio;
+use once_cell::sync::Lazy;
 use rubato::{FftFixedInOut, Resampler};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicI32, AtomicBool, Ordering};
-use once_cell::sync::Lazy;
 
 pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
 pub const WINDOW_SIZE: usize = 800;
@@ -51,19 +51,16 @@ pub fn wav_cache_enabled() -> bool {
 }
 
 /// Shared pool of resamplers keyed by input sample rate.
-static RESAMPLERS: Lazy<Mutex<HashMap<u32, Arc<Mutex<FftFixedInOut<f32>>>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static RESAMPLERS: Lazy<Mutex<HashMap<u32, Arc<Mutex<FftFixedInOut<f32>>>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 fn get_resampler(from_rate: u32) -> Result<Arc<Mutex<FftFixedInOut<f32>>>, Box<dyn Error>> {
     let mut map = RESAMPLERS.lock().unwrap();
     if let Some(r) = map.get(&from_rate) {
         return Ok(r.clone());
     }
-    let resampler = FftFixedInOut::<f32>::new(
-        from_rate as usize,
-        DEFAULT_SAMPLE_RATE as usize,
-        1024,
-        1,
-    )?;
+    let resampler =
+        FftFixedInOut::<f32>::new(from_rate as usize, DEFAULT_SAMPLE_RATE as usize, 1024, 1)?;
     let arc = Arc::new(Mutex::new(resampler));
     map.insert(from_rate, arc.clone());
     Ok(arc)
@@ -199,7 +196,11 @@ impl FeatureExtractor {
         let fft = fft_planner.plan_fft_forward(WINDOW_SIZE);
         let mut dct_planner = DctPlanner::<f32>::new();
         let dct = dct_planner.plan_dct2(N_MELS);
-        Self { fft, dct, mel_filters }
+        Self {
+            fft,
+            dct,
+            mel_filters,
+        }
     }
 
     /// Extract MFCC features from a slice of samples.
@@ -266,7 +267,6 @@ fn window_samples_with_plan(
 
 /// Pre-train the network with a slice of `i16` samples.
 pub fn pretrain_network(
-    extractor: &FeatureExtractor,
     net: &mut SimpleNeuralNet,
     samples: &[i16],
     target_class: usize,
@@ -275,6 +275,7 @@ pub fn pretrain_network(
     lr: f32,
     dropout: f32,
     batch_size: usize,
+    extractor: &FeatureExtractor,
 ) -> f32 {
     let mut target = vec![0.0f32; num_classes];
     if target_class < num_classes {
@@ -283,7 +284,6 @@ pub fn pretrain_network(
     let mut rng = rand::thread_rng();
     let mut total_loss = 0.0f32;
     let mut count = 0usize;
-
 
     for _ in 0..epochs {
         let aug_samples = augment(samples);
@@ -378,8 +378,7 @@ pub fn load_audio_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
                 .map_err(|e| Box::<dyn Error>::from(e));
         }
 
-        let (_, resampled) =
-            load_and_resample_file(path).map_err(|e| Box::<dyn Error>::from(e))?;
+        let (_, resampled) = load_and_resample_file(path).map_err(|e| Box::<dyn Error>::from(e))?;
 
         if wav_cache_enabled() {
             let _ = std::fs::create_dir_all(cache_dir);
@@ -595,7 +594,6 @@ pub fn train_from_files(
             let lr_scaled = lr * (0.99f32).powi(step.fetch_add(1, Ordering::SeqCst));
             let mut guard = net.lock().unwrap();
             let _ = pretrain_network(
-                extractor,
                 &mut *guard,
                 &samples,
                 class,
@@ -604,6 +602,7 @@ pub fn train_from_files(
                 lr_scaled,
                 dropout,
                 batch_size,
+                extractor,
             );
             guard.record_training_file(class, path);
         }
