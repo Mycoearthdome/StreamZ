@@ -250,21 +250,23 @@ pub fn pretrain_network(
     }
 }
 
-/// Load all samples from a 16-bit mono WAV file.
-pub fn load_wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
+/// Load all samples from a WAV file.
+/// Returns raw interleaved samples, the sample rate and channel count.
+pub fn load_wav_samples(path: &str) -> Result<(Vec<i16>, u32, usize), Box<dyn Error>> {
     let file = File::open(path)?;
     let mut reader = hound::WavReader::new(BufReader::new(file))?;
     if reader.spec().bits_per_sample != 16 {
         return Err("Only 16-bit audio supported".into());
     }
     let sample_rate = reader.spec().sample_rate;
+    let channels = reader.spec().channels as usize;
     let samples: Result<Vec<i16>, _> = reader.samples::<i16>().collect();
     let samples = samples?;
-    resample_to_44100(&samples, sample_rate)
+    Ok((samples, sample_rate, channels))
 }
 
 /// Load samples from an MP3 file using the `minimp3` decoder.
-/// Returns downmixed mono samples along with the detected sample rate.
+/// Returns raw interleaved samples, the sample rate and channel count.
 pub fn load_mp3_samples(path: &str) -> Result<(Vec<i16>, u32, usize), Box<dyn Error>> {
     let file = File::open(path)?;
     let mut decoder = Decoder::new(BufReader::new(file));
@@ -283,17 +285,7 @@ pub fn load_mp3_samples(path: &str) -> Result<(Vec<i16>, u32, usize), Box<dyn Er
                     sample_rate = sr as u32;
                     channels = ch as usize;
                 }
-                for chunk in data.chunks(2) {
-                    let left = chunk[0] as i32;
-                    let right = if chunk.len() > 1 {
-                        chunk[1] as i32
-                    } else {
-                        left
-                    };
-                    let mono = ((left + right) / 2)
-                        .clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-                    samples.push(mono);
-                }
+                samples.extend_from_slice(&data);
             }
             Err(Mp3Error::Eof) => break,
             Err(e) => return Err(Box::new(e)),
@@ -302,7 +294,7 @@ pub fn load_mp3_samples(path: &str) -> Result<(Vec<i16>, u32, usize), Box<dyn Er
     if sample_rate == 0 {
         return Err("No frames decoded".into());
     }
-    Ok((samples, sample_rate, 1))
+    Ok((samples, sample_rate, channels))
 }
 
 /// Load audio samples from either a WAV or MP3 file depending on the file
@@ -318,11 +310,13 @@ pub fn load_audio_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
         let cached_path = cache_dir.join(format!("{file_stem}.wav"));
 
         if cached_path.exists() {
-            return load_wav_samples(cached_path.to_str().unwrap());
+            return load_and_resample_file(cached_path.to_str().unwrap())
+                .map(|(_, s)| s)
+                .map_err(|e| Box::<dyn Error>::from(e));
         }
 
-        let (samples, sr, _) = load_mp3_samples(path)?;
-        let resampled = resample_to_44100(&samples, sr)?;
+        let (_, resampled) =
+            load_and_resample_file(path).map_err(|e| Box::<dyn Error>::from(e))?;
 
         // Save WAV to cache
         let mut writer = hound::WavWriter::create(
@@ -341,7 +335,9 @@ pub fn load_audio_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
 
         Ok(resampled)
     } else {
-        load_wav_samples(path)
+        load_and_resample_file(path)
+            .map(|(_, s)| s)
+            .map_err(|e| Box::<dyn Error>::from(e))
     }
 }
 
@@ -375,16 +371,19 @@ pub fn load_and_resample_file(path: &str) -> Result<(String, Vec<i16>), String> 
         "wav" => {
             let reader = hound::WavReader::open(path).map_err(|e| e.to_string())?;
             let spec = reader.spec();
+            let channels = spec.channels as usize;
             let samples: Vec<i16> = reader
                 .into_samples::<i16>()
                 .filter_map(Result::ok)
                 .collect();
-            let resampled = resample_to_44100(&samples, spec.sample_rate).map_err(|e| e.to_string())?;
+            let mono = downmix_to_mono(&samples, channels);
+            let resampled = resample_to_44100(&mono, spec.sample_rate).map_err(|e| e.to_string())?;
             Ok((path.to_string(), resampled))
         }
         "mp3" => {
-            let (samples, rate, _) = load_mp3_samples(path).map_err(|e| e.to_string())?;
-            let resampled = resample_to_44100(&samples, rate).map_err(|e| e.to_string())?;
+            let (samples, rate, ch) = load_mp3_samples(path).map_err(|e| e.to_string())?;
+            let mono = downmix_to_mono(&samples, ch);
+            let resampled = resample_to_44100(&mono, rate).map_err(|e| e.to_string())?;
             Ok((path.to_string(), resampled))
         }
         _ => Err(format!("Unsupported format: {}", path)),
