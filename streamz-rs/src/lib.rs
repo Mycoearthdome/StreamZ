@@ -446,7 +446,7 @@ impl SimpleNeuralNet {
     pub fn forward(&self, bits: &[f32]) -> Vec<f32> {
         let x = Array1::from_vec(bits.to_vec());
         let h1 = (x.dot(&self.w1) + &self.b1).mapv(|v| if v > 0.0 { v } else { 0.0 });
-        let h2 = (h1.dot(&self.w2) + &self.b2).mapv(|v| if v > 0.0 { v } else { 0.0 });
+        let h2 = (h1.dot(&self.w2) + &self.b2).mapv(|v| v.tanh());
         let w3 = self.w3.slice(s![.., ..self.num_speakers]);
         let b3 = self.b3.slice(s![..self.num_speakers]);
         let out = h2.dot(&w3) + &b3;
@@ -460,8 +460,9 @@ impl SimpleNeuralNet {
     pub fn embed(&self, bits: &[f32]) -> Vec<f32> {
         let x = Array1::from_vec(bits.to_vec());
         let h1 = (x.dot(&self.w1) + &self.b1).mapv(|v| if v > 0.0 { v } else { 0.0 });
-        let h2 = (h1.dot(&self.w2) + &self.b2).mapv(|v| if v > 0.0 { v } else { 0.0 });
-        h2.to_vec()
+        let mut h2 = (h1.dot(&self.w2) + &self.b2).mapv(|v| v.tanh()).to_vec();
+        normalize(&mut h2);
+        h2
     }
 
     /// Return the size of the embedding vector
@@ -476,7 +477,7 @@ impl SimpleNeuralNet {
         let h1_pre = x.dot(&self.w1) + &self.b1;
         let h1 = h1_pre.mapv(|v| if v > 0.0 { v } else { 0.0 });
         let h2_pre = h1.dot(&self.w2) + &self.b2;
-        let h2 = h2_pre.mapv(|v| if v > 0.0 { v } else { 0.0 });
+        let h2 = h2_pre.mapv(|v| v.tanh());
         let w3 = self.w3.slice(s![.., ..self.num_speakers]);
         let b3 = self.b3.slice(s![..self.num_speakers]);
         let out_pre = h2.dot(&w3) + &b3;
@@ -487,10 +488,11 @@ impl SimpleNeuralNet {
 
         let delta_out = &out - &t;
         let grad_w3 = h2
+            .view()
             .insert_axis(Axis(1))
             .dot(&delta_out.clone().insert_axis(Axis(0)));
         let grad_b3 = delta_out.clone();
-        let delta_h2 = delta_out.dot(&w3.t()) * h2_pre.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
+        let delta_h2 = delta_out.dot(&w3.t()) * h2.mapv(|v| 1.0 - v * v);
         let grad_w2 = h1
             .insert_axis(Axis(1))
             .dot(&delta_h2.clone().insert_axis(Axis(0)));
@@ -534,7 +536,7 @@ impl SimpleNeuralNet {
             let h1_pre = x.dot(&self.w1) + &self.b1;
             let h1 = h1_pre.mapv(|v| if v > 0.0 { v } else { 0.0 });
             let h2_pre = h1.dot(&self.w2) + &self.b2;
-            let h2 = h2_pre.mapv(|v| if v > 0.0 { v } else { 0.0 });
+            let h2 = h2_pre.mapv(|v| v.tanh());
             let w3 = self.w3.slice(s![.., ..self.num_speakers]);
             let b3 = self.b3.slice(s![..self.num_speakers]);
             let out_pre = h2.dot(&w3) + &b3;
@@ -544,9 +546,12 @@ impl SimpleNeuralNet {
             let out = exp.mapv(|v| v / sum);
 
             let delta_out = &out - &t;
-            grad_w3 += &h2.insert_axis(Axis(1)).dot(&delta_out.clone().insert_axis(Axis(0)));
+            grad_w3 += &h2
+                .view()
+                .insert_axis(Axis(1))
+                .dot(&delta_out.clone().insert_axis(Axis(0)));
             grad_b3 += &delta_out;
-            let delta_h2 = delta_out.dot(&w3.t()) * h2_pre.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
+            let delta_h2 = delta_out.dot(&w3.t()) * h2.mapv(|v| 1.0 - v * v);
             grad_w2 += &h1.insert_axis(Axis(1)).dot(&delta_h2.clone().insert_axis(Axis(0)));
             grad_b2 += &delta_h2;
             let delta_h1 = delta_h2.dot(&self.w2.t()) * h1_pre.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
