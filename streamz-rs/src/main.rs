@@ -1,13 +1,11 @@
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::prelude::*;
 use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 use streamz_rs::{
-    compute_speaker_embeddings, identify_speaker_cosine_feats,
-    identify_speaker_with_threshold, load_audio_samples, load_cached_features,
-    pretrain_from_features, train_from_files, SimpleNeuralNet, FEATURE_SIZE,
+    compute_speaker_embeddings, identify_speaker_cosine, identify_speaker_with_threshold,
+    load_audio_samples, pretrain_network, train_from_files, SimpleNeuralNet, FEATURE_SIZE,
 };
 
 const MODEL_PATH: &str = "model.npz";
@@ -25,8 +23,6 @@ const TRAIN_EPOCHS: usize = 10;
 const DROPOUT_PROB: f32 = streamz_rs::DEFAULT_DROPOUT;
 /// Number of feature windows per training batch.
 const BATCH_SIZE: usize = 8;
-/// Recompute speaker embeddings after this many training samples.
-const EMBED_UPDATE_INTERVAL: usize = 20;
 
 fn load_train_files(path: &str) -> Vec<(String, Option<usize>)> {
     if let Ok(content) = fs::read_to_string(path) {
@@ -151,8 +147,8 @@ fn main() {
 
     let dataset_size = train_files.len();
     let burn_in_default = ((dataset_size as f32) * DEFAULT_BURN_IN_FRAC).ceil() as usize;
-    let burn_in_limit = burn_in_limit.unwrap_or_else(|| burn_in_default.clamp(10, 50));
-    let max_speakers = max_speakers.unwrap_or_else(|| count_speakers(&train_files) + 10);
+    let _burn_in_limit = burn_in_limit.unwrap_or_else(|| burn_in_default.clamp(10, 50));
+    let _max_speakers = max_speakers.unwrap_or_else(|| count_speakers(&train_files) + 10);
 
     if eval_mode {
         use rand::seq::SliceRandom;
@@ -306,97 +302,102 @@ fn main() {
             .unwrap(),
     );
 
-    let preload: Vec<_> = train_files
-        .par_iter()
-        .map(|(path, class)| {
-            load_cached_features(path)
-                .map(|wins| (path.clone(), *class, wins))
-                .map_err(|e| e.to_string())
-        })
-        .collect();
-
     let mut total_loss = 0.0f32;
     let mut loss_count = 0usize;
     let mut embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
-    for ((path, class), result) in train_files.iter_mut().zip(preload) {
+    let mut update_embeddings = true;
+    let mut _processed = 0;
+
+    for (path, class) in train_files.iter_mut() {
         pb.set_message(path.to_string());
-        match result {
-            Ok((_, _, windows)) => {
-                let progress = (loss_count as f32 / burn_in_limit as f32).clamp(0.0, 1.0);
-                let dynamic_threshold = conf_threshold + (0.95 - conf_threshold) * (1.0 - progress);
+
+        match load_audio_samples(path) {
+            Ok(samples) => {
+                let dynamic_threshold = if loss_count < 50 {
+                    0.95
+                } else {
+                    conf_threshold
+                };
+
                 if let Some(label) = *class {
+                    // Known speaker: supervised training
                     let sz = net.output_size();
-                    let lr = 0.01 * (0.99f32).powi(loss_count as i32);
-                    let loss = pretrain_from_features(
+                    let loss = pretrain_network(
                         &mut net,
-                        &windows,
+                        &samples,
                         label,
                         sz,
-                        TRAIN_EPOCHS,
-                        lr,
+                        5, // Reduced TRAIN_EPOCHS for speed
+                        0.01,
                         DROPOUT_PROB,
                         BATCH_SIZE,
                     );
                     total_loss += loss;
                     loss_count += 1;
                     net.record_training_file(label, path);
-                    if loss_count % EMBED_UPDATE_INTERVAL == 0 {
-                        embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
-                    }
-                } else if let Some(pred) =
-                    identify_speaker_cosine_feats(&net, &embeddings, &windows, dynamic_threshold)
-                {
-                    *class = Some(pred);
-                    let sz = net.output_size();
-                    let lr = 0.01 * (0.99f32).powi(loss_count as i32);
-                    let loss = pretrain_from_features(
-                        &mut net,
-                        &windows,
-                        pred,
-                        sz,
-                        TRAIN_EPOCHS,
-                        lr,
-                        DROPOUT_PROB,
-                        BATCH_SIZE,
-                    );
-                    total_loss += loss;
-                    loss_count += 1;
-                    net.record_training_file(pred, path);
-                    if loss_count % EMBED_UPDATE_INTERVAL == 0 {
-                        embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
-                    }
-                } else if net.output_size() < max_speakers {
-                    net.add_output_class();
-                    let new_label = net.output_size() - 1;
-                    *class = Some(new_label);
-                    let sz = net.output_size();
-                    let lr = 0.01 * (0.99f32).powi(loss_count as i32);
-                    let loss = pretrain_from_features(
-                        &mut net,
-                        &windows,
-                        new_label,
-                        sz,
-                        TRAIN_EPOCHS,
-                        lr,
-                        DROPOUT_PROB,
-                        BATCH_SIZE,
-                    );
-                    total_loss += loss;
-                    loss_count += 1;
-                    net.record_training_file(new_label, path);
-                    if loss_count % EMBED_UPDATE_INTERVAL == 0 {
-                        embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
-                    }
+                    update_embeddings = true;
                 } else {
-                    eprintln!("Skipping {}: speaker limit {} reached", path, max_speakers);
+                    // Unlabelled: try to match known speaker
+                    if update_embeddings || embeddings.is_empty() {
+                        embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
+                        update_embeddings = false;
+                    }
+
+                    if let Some(pred) =
+                        identify_speaker_cosine(&net, &embeddings, &samples, dynamic_threshold)
+                    {
+                        *class = Some(pred);
+                        let sz = net.output_size();
+                        let loss = pretrain_network(
+                            &mut net,
+                            &samples,
+                            pred,
+                            sz,
+                            5,
+                            0.01,
+                            DROPOUT_PROB,
+                            BATCH_SIZE,
+                        );
+                        total_loss += loss;
+                        loss_count += 1;
+                        net.record_training_file(pred, path);
+                        update_embeddings = true;
+                    } else {
+                        // New speaker: expand class
+                        net.add_output_class();
+                        let new_label = net.output_size() - 1;
+                        *class = Some(new_label);
+                        let sz = net.output_size();
+                        let loss = pretrain_network(
+                            &mut net,
+                            &samples,
+                            new_label,
+                            sz,
+                            5,
+                            0.01,
+                            DROPOUT_PROB,
+                            BATCH_SIZE,
+                        );
+                        total_loss += loss;
+                        loss_count += 1;
+                        net.record_training_file(new_label, path);
+                        update_embeddings = true;
+                    }
                 }
-                if let Err(e) = net.save(MODEL_PATH) {
-                    eprintln!("Failed to save model: {}", e);
+
+                // Save periodically
+                if loss_count % 10 == 0 {
+                    if let Err(e) = net.save(MODEL_PATH) {
+                        eprintln!("Failed to save model: {}", e);
+                    }
+                    embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
                 }
             }
             Err(e) => eprintln!("Skipping {}: {}", path, e),
         }
+
         pb.inc(1);
+        _processed += 1;
     }
 
     pb.finish_and_clear();
