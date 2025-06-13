@@ -569,8 +569,9 @@ pub fn train_from_files(
 
     files.par_iter().for_each(|&(path, class)| {
         pb.println(path);
-        let (sample_rate, bits) = match audio_metadata(path) {
-            Ok(meta) => meta,
+
+        let samples = match load_and_resample_file(path) {
+            Ok((_, s)) => s,
             Err(e) => {
                 eprintln!("Skipping {}: {}", path, e);
                 pb.inc(1);
@@ -580,37 +581,24 @@ pub fn train_from_files(
 
         {
             let mut guard = net.lock().unwrap();
-            guard.set_dataset_specs(sample_rate, bits);
-        }
-
-        if bits != 16 {
-            eprintln!("Skipping {}: Only 16-bit audio supported", path);
-            pb.inc(1);
-            return;
+            // All audio is resampled to DEFAULT_SAMPLE_RATE and 16 bits
+            guard.set_dataset_specs(DEFAULT_SAMPLE_RATE, 16);
         }
 
         for _ in 0..epochs {
-            match load_audio_samples(path) {
-                Ok(samples) => {
-                    let lr_scaled = lr * (0.99f32).powi(step.fetch_add(1, Ordering::SeqCst));
-                    let mut guard = net.lock().unwrap();
-                    let _ = pretrain_network(
-                        &mut *guard,
-                        &samples,
-                        class,
-                        num_speakers,
-                        1,
-                        lr_scaled,
-                        dropout,
-                        batch_size,
-                    );
-                    guard.record_training_file(class, path);
-                }
-                Err(e) => {
-                    eprintln!("Skipping {}: {}", path, e);
-                    break;
-                }
-            }
+            let lr_scaled = lr * (0.99f32).powi(step.fetch_add(1, Ordering::SeqCst));
+            let mut guard = net.lock().unwrap();
+            let _ = pretrain_network(
+                &mut *guard,
+                &samples,
+                class,
+                num_speakers,
+                1,
+                lr_scaled,
+                dropout,
+                batch_size,
+            );
+            guard.record_training_file(class, path);
         }
 
         pb.inc(1);
