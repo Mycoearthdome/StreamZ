@@ -29,7 +29,7 @@ const DEFAULT_CONF_THRESHOLD: f32 = 0.8;
 /// value is provided via `--burn-in-limit`.
 const DEFAULT_BURN_IN_FRAC: f32 = 0.2;
 /// Number of training epochs for each file.
-const TRAIN_EPOCHS: usize = 10;
+const TRAIN_EPOCHS: usize = 15;
 /// Dropout probability used during training.
 const DROPOUT_PROB: f32 = streamz_rs::DEFAULT_DROPOUT;
 /// Number of feature windows per training batch.
