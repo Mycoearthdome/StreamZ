@@ -208,12 +208,6 @@ impl FeatureExtractor {
     }
 }
 
-/// Split samples into windows and compute MFCC features for each window.
-fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
-    static EXTRACTOR: Lazy<FeatureExtractor> = Lazy::new(FeatureExtractor::new);
-    EXTRACTOR.extract(samples)
-}
-
 /// Split samples into windows using precomputed transform plans.
 fn window_samples_with_plan(
     samples: &[i16],
@@ -272,6 +266,7 @@ fn window_samples_with_plan(
 
 /// Pre-train the network with a slice of `i16` samples.
 pub fn pretrain_network(
+    extractor: &FeatureExtractor,
     net: &mut SimpleNeuralNet,
     samples: &[i16],
     target_class: usize,
@@ -288,23 +283,11 @@ pub fn pretrain_network(
     let mut rng = rand::thread_rng();
     let mut total_loss = 0.0f32;
     let mut count = 0usize;
-    let mel_filters = mel::<f32>(
-        DEFAULT_SAMPLE_RATE as usize,
-        WINDOW_SIZE,
-        Some(N_MELS),
-        None,
-        None,
-        false,
-        NormalizationFactor::One,
-    );
-    let mut fft_planner = FftPlanner::<f32>::new();
-    let fft = fft_planner.plan_fft_forward(WINDOW_SIZE);
-    let mut dct_planner = DctPlanner::<f32>::new();
-    let dct = dct_planner.plan_dct2(N_MELS);
+
 
     for _ in 0..epochs {
         let aug_samples = augment(samples);
-        let mut windows = window_samples_with_plan(&aug_samples, &mel_filters, &fft, &dct);
+        let mut windows = extractor.extract(&aug_samples);
         windows.shuffle(&mut rng);
         for chunk in windows.chunks(batch_size.max(1)) {
             let mut batch = Vec::with_capacity(chunk.len());
@@ -497,7 +480,10 @@ fn feature_cache_path(path: &str) -> std::path::PathBuf {
 }
 
 /// Load cached MFCC features for a file or compute and store them if missing.
-pub fn load_cached_features(path: &str) -> Result<Vec<Vec<f32>>, Box<dyn Error>> {
+pub fn load_cached_features(
+    path: &str,
+    extractor: &FeatureExtractor,
+) -> Result<Vec<Vec<f32>>, Box<dyn Error>> {
     let cache = feature_cache_path(path);
     if cache.exists() {
         let arr: Array2<f32> = read_npy(&cache)?;
@@ -508,7 +494,7 @@ pub fn load_cached_features(path: &str) -> Result<Vec<Vec<f32>>, Box<dyn Error>>
         return Ok(feats);
     }
     let samples = load_audio_samples(path)?;
-    let feats = window_samples(&samples);
+    let feats = extractor.extract(&samples);
     if !feats.is_empty() {
         let flat: Vec<f32> = feats.iter().flat_map(|v| v.clone()).collect();
         let arr = Array2::from_shape_vec((feats.len(), feats[0].len()), flat)?;
@@ -573,6 +559,7 @@ pub fn train_from_files(
     lr: f32,
     dropout: f32,
     batch_size: usize,
+    extractor: &FeatureExtractor,
 ) -> Result<(), Box<dyn Error>> {
     use indicatif::{ProgressBar, ProgressStyle};
     use rayon::prelude::*;
@@ -608,6 +595,7 @@ pub fn train_from_files(
             let lr_scaled = lr * (0.99f32).powi(step.fetch_add(1, Ordering::SeqCst));
             let mut guard = net.lock().unwrap();
             let _ = pretrain_network(
+                extractor,
                 &mut *guard,
                 &samples,
                 class,
@@ -989,9 +977,14 @@ impl SimpleNeuralNet {
 }
 
 /// Predict the speaker ID from a sample slice using the network
-pub fn identify_speaker(net: &SimpleNeuralNet, sample: &[i16]) -> usize {
+pub fn identify_speaker(
+    net: &SimpleNeuralNet,
+    sample: &[i16],
+    extractor: &FeatureExtractor,
+) -> usize {
     let mut sums = vec![0.0f32; net.output_size()];
-    for win in window_samples(sample) {
+    let windows = extractor.extract(sample);
+    for win in windows {
         let out = net.forward(&win);
         for (i, v) in out.iter().enumerate() {
             sums[i] += *v;
@@ -1010,6 +1003,7 @@ pub fn identify_speaker_with_threshold(
     net: &SimpleNeuralNet,
     sample: &[i16],
     threshold: f32,
+    extractor: &FeatureExtractor,
 ) -> Option<usize> {
     // If there's only a single speaker known, every prediction will trivially
     // have a confidence of 1.0. In that case we should treat the result as
@@ -1019,7 +1013,8 @@ pub fn identify_speaker_with_threshold(
     }
     let mut sums = vec![0.0f32; net.output_size()];
     let mut count = 0f32;
-    for win in window_samples(sample) {
+    let windows = extractor.extract(sample);
+    for win in windows {
         let out = net.forward(&win);
         for (i, v) in out.iter().enumerate() {
             sums[i] += *v;
@@ -1046,9 +1041,15 @@ pub fn identify_speaker_with_threshold(
 /// threshold. Each window is classified individually and the speaker with the
 /// highest probability is counted if that probability exceeds `threshold`.
 /// Speakers are returned in descending order of occurrences across windows.
-pub fn identify_speaker_list(net: &SimpleNeuralNet, sample: &[i16], threshold: f32) -> Vec<usize> {
+pub fn identify_speaker_list(
+    net: &SimpleNeuralNet,
+    sample: &[i16],
+    threshold: f32,
+    extractor: &FeatureExtractor,
+) -> Vec<usize> {
     let mut counts = vec![0usize; net.output_size()];
-    for win in window_samples(sample) {
+    let windows = extractor.extract(sample);
+    for win in windows {
         let out = net.forward(&win);
         if let Some((best_idx, best_val)) = out
             .iter()
@@ -1075,9 +1076,14 @@ pub fn identify_speaker_list(net: &SimpleNeuralNet, sample: &[i16], threshold: f
 /// Averaging all window embeddings can flatten subtle vocal cues. This
 /// implementation computes the median value per dimension across all
 /// windows instead.
-pub fn extract_embedding(net: &SimpleNeuralNet, sample: &[i16]) -> Vec<f32> {
+pub fn extract_embedding(
+    net: &SimpleNeuralNet,
+    sample: &[i16],
+    extractor: &FeatureExtractor,
+) -> Vec<f32> {
     let mut wins = Vec::new();
-    for win in window_samples(sample) {
+    let windows = extractor.extract(sample);
+    for win in windows {
         wins.push(net.embed(&win));
     }
 
@@ -1149,12 +1155,15 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// where `mean` is the average embedding, `mean_sim` is the mean cosine
 /// similarity of each training embedding to the mean, and `std_sim` is the
 /// standard deviation of those similarities.
-pub fn compute_speaker_embeddings(net: &SimpleNeuralNet) -> Option<Vec<(Vec<f32>, f32, f32)>> {
+pub fn compute_speaker_embeddings(
+    net: &SimpleNeuralNet,
+    extractor: &FeatureExtractor,
+) -> Option<Vec<(Vec<f32>, f32, f32)>> {
     let mut speaker_embeds = Vec::with_capacity(net.output_size());
     for files in net.file_lists.iter().take(net.output_size()) {
         let mut embeds = Vec::new();
         for path in files {
-            if let Ok(wins) = load_cached_features(path) {
+            if let Ok(wins) = load_cached_features(path, extractor) {
                 let emb = extract_embedding_from_features(net, &wins);
                 embeds.push(emb);
             }
@@ -1199,11 +1208,12 @@ pub fn identify_speaker_cosine(
     speaker_embeds: &[(Vec<f32>, f32, f32)],
     sample: &[i16],
     threshold: f32,
+    extractor: &FeatureExtractor,
 ) -> Option<usize> {
     if speaker_embeds.is_empty() {
         return None;
     }
-    let emb = extract_embedding(net, sample);
+    let emb = extract_embedding(net, sample, extractor);
     let mut best_idx = None;
     let mut best_val = threshold;
     for (i, (mean, mean_sim, std_sim)) in speaker_embeds.iter().enumerate() {
