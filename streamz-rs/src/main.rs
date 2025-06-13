@@ -7,8 +7,9 @@ use std::path::Path;
 use streamz_rs::{
     compute_speaker_embeddings, identify_speaker_cosine, identify_speaker_with_threshold,
     load_and_resample_file, load_audio_samples, pretrain_network, train_from_files,
-    SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
+    batch_resample, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
 };
+use std::collections::HashMap;
 
 const MODEL_PATH: &str = "model.npz";
 const TRAIN_FILE_LIST: &str = "train_files.txt";
@@ -211,6 +212,11 @@ fn main() {
     // Convert all MP3 files to cached WAVs before proceeding
     precache_mp3_files(&mut train_files);
 
+    // Decode and resample all files in parallel once
+    let path_list: Vec<String> = train_files.iter().map(|(p, _)| p.clone()).collect();
+    let resampled_audio = batch_resample(&path_list);
+    let mut audio_map: HashMap<String, Vec<i16>> = resampled_audio.into_iter().collect();
+
     let dataset_size = train_files.len();
     let burn_in_default = ((dataset_size as f32) * DEFAULT_BURN_IN_FRAC).ceil() as usize;
     let _burn_in_limit = burn_in_limit.unwrap_or_else(|| burn_in_default.clamp(10, 50));
@@ -377,20 +383,19 @@ fn main() {
     for (path, class) in train_files.iter_mut() {
         pb.set_message(path.to_string());
 
-        match load_audio_samples(path) {
-            Ok(samples) => {
-                let dynamic_threshold = if loss_count < 50 {
-                    0.95
-                } else {
-                    conf_threshold
-                };
+        if let Some(samples) = audio_map.get(path) {
+            let dynamic_threshold = if loss_count < 50 {
+                0.95
+            } else {
+                conf_threshold
+            };
 
                 if let Some(label) = *class {
                     // Known speaker: supervised training
                     let sz = net.output_size();
                     let loss = pretrain_network(
                         &mut net,
-                        &samples,
+                        samples,
                         label,
                         sz,
                         5, // Reduced TRAIN_EPOCHS for speed
@@ -410,13 +415,13 @@ fn main() {
                     }
 
                     if let Some(pred) =
-                        identify_speaker_cosine(&net, &embeddings, &samples, dynamic_threshold)
+                        identify_speaker_cosine(&net, &embeddings, samples, dynamic_threshold)
                     {
                         *class = Some(pred);
                         let sz = net.output_size();
                         let loss = pretrain_network(
                             &mut net,
-                            &samples,
+                            samples,
                             pred,
                             sz,
                             5,
@@ -436,7 +441,7 @@ fn main() {
                         let sz = net.output_size();
                         let loss = pretrain_network(
                             &mut net,
-                            &samples,
+                            samples,
                             new_label,
                             sz,
                             5,
@@ -458,8 +463,8 @@ fn main() {
                     }
                     embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
                 }
-            }
-            Err(e) => eprintln!("Skipping {}: {}", path, e),
+        } else {
+            eprintln!("Missing audio for {}", path);
         }
 
         pb.inc(1);

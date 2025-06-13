@@ -14,9 +14,12 @@ use rustfft::{num_complex::Complex, FftPlanner};
 use std::io::BufReader;
 // use rodio;
 use rubato::{FftFixedInOut, Resampler};
+use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use once_cell::sync::Lazy;
 
 pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
 pub const WINDOW_SIZE: usize = 800;
@@ -30,6 +33,25 @@ pub const FEATURE_SIZE: usize = if WITH_DELTAS {
 };
 /// Default dropout probability applied during training.
 pub const DEFAULT_DROPOUT: f32 = 0.2;
+
+/// Shared pool of resamplers keyed by input sample rate.
+static RESAMPLERS: Lazy<Mutex<HashMap<u32, Arc<Mutex<FftFixedInOut<f32>>>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn get_resampler(from_rate: u32) -> Result<Arc<Mutex<FftFixedInOut<f32>>>, Box<dyn Error>> {
+    let mut map = RESAMPLERS.lock().unwrap();
+    if let Some(r) = map.get(&from_rate) {
+        return Ok(r.clone());
+    }
+    let resampler = FftFixedInOut::<f32>::new(
+        from_rate as usize,
+        DEFAULT_SAMPLE_RATE as usize,
+        1024,
+        1,
+    )?;
+    let arc = Arc::new(Mutex::new(resampler));
+    map.insert(from_rate, arc.clone());
+    Ok(arc)
+}
 
 /// Apply data augmentation to raw i16 samples.
 ///
@@ -107,10 +129,11 @@ pub fn resample_to_44100(samples: &[i16], from_rate: u32) -> Result<Vec<i16>, Bo
     let frames_out = (frames_in * DEFAULT_SAMPLE_RATE as usize) / from_rate as usize;
     let mut output = vec![vec![0.0f32; frames_out]];
 
-    let mut resampler =
-        FftFixedInOut::<f32>::new(from_rate as usize, DEFAULT_SAMPLE_RATE as usize, 1024, 1)?;
-
-    resampler.process_into_buffer(&input, &mut output, None)?;
+    let resampler_arc = get_resampler(from_rate)?;
+    {
+        let mut resampler = resampler_arc.lock().unwrap();
+        resampler.process_into_buffer(&input, &mut output, None)?;
+    }
 
     Ok(output[0]
         .iter()
