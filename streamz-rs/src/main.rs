@@ -1,3 +1,4 @@
+use hound;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::env;
 use std::fs;
@@ -5,7 +6,8 @@ use std::io::Write;
 use std::path::Path;
 use streamz_rs::{
     compute_speaker_embeddings, identify_speaker_cosine, identify_speaker_with_threshold,
-    load_audio_samples, pretrain_network, train_from_files, SimpleNeuralNet, FEATURE_SIZE,
+    load_and_resample_file, load_audio_samples, pretrain_network, train_from_files,
+    SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
 };
 
 const MODEL_PATH: &str = "model.npz";
@@ -76,6 +78,67 @@ fn count_speakers(files: &[(String, Option<usize>)]) -> usize {
         .unwrap_or(0)
 }
 
+/// Convert an MP3 file to a cached WAV if needed and return the new path.
+fn cache_mp3_as_wav(original: &str) -> Option<String> {
+    if !original.to_ascii_lowercase().ends_with(".mp3") {
+        return Some(original.to_string());
+    }
+    let cache_dir = Path::new("cache");
+    if let Err(e) = std::fs::create_dir_all(cache_dir) {
+        eprintln!("Failed to create cache directory: {}", e);
+        return None;
+    }
+    let file_stem = Path::new(original).file_stem()?.to_string_lossy();
+    let cached_path = cache_dir.join(format!("{file_stem}.wav"));
+    if !cached_path.exists() {
+        match load_and_resample_file(original) {
+            Ok((_, samples)) => {
+                if let Ok(mut writer) = hound::WavWriter::create(
+                    &cached_path,
+                    hound::WavSpec {
+                        channels: 1,
+                        sample_rate: DEFAULT_SAMPLE_RATE,
+                        bits_per_sample: 16,
+                        sample_format: hound::SampleFormat::Int,
+                    },
+                ) {
+                    for s in &samples {
+                        if let Err(e) = writer.write_sample(*s) {
+                            eprintln!("Failed to write {}: {}", cached_path.display(), e);
+                            let _ = std::fs::remove_file(&cached_path);
+                            return None;
+                        }
+                    }
+                    if let Err(e) = writer.finalize() {
+                        eprintln!("Failed to finalize {}: {}", cached_path.display(), e);
+                        let _ = std::fs::remove_file(&cached_path);
+                        return None;
+                    }
+                } else {
+                    eprintln!("Failed to create {}", cached_path.display());
+                    return None;
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to convert {}: {}", original, e);
+                return None;
+            }
+        }
+    }
+    Some(cached_path.to_string_lossy().into_owned())
+}
+
+/// Convert all MP3 entries in the training list to cached WAV files.
+fn precache_mp3_files(files: &mut [(String, Option<usize>)]) {
+    for (path, _) in files.iter_mut() {
+        if path.to_ascii_lowercase().ends_with(".mp3") {
+            if let Some(new_path) = cache_mp3_as_wav(path) {
+                *path = new_path;
+            }
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut conf_threshold = DEFAULT_CONF_THRESHOLD;
@@ -144,6 +207,9 @@ fn main() {
         eprintln!("{} is empty", TRAIN_FILE_LIST);
         return;
     }
+
+    // Convert all MP3 files to cached WAVs before proceeding
+    precache_mp3_files(&mut train_files);
 
     let dataset_size = train_files.len();
     let burn_in_default = ((dataset_size as f32) * DEFAULT_BURN_IN_FRAC).ceil() as usize;
