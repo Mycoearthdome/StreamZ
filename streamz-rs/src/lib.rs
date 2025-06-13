@@ -310,6 +310,7 @@ pub fn train_from_files(
             .unwrap(),
     );
 
+    let mut step = 0i32;
     for &(path, class) in files {
         pb.set_message(path.to_string());
         let (sample_rate, bits) = match audio_metadata(path) {
@@ -327,17 +328,19 @@ pub fn train_from_files(
         for _ in 0..epochs {
             match load_audio_samples(path) {
                 Ok(samples) => {
+                    let lr_scaled = lr * (0.99f32).powi(step);
                     let _ = pretrain_network(
                         net,
                         &samples,
                         class,
                         num_speakers,
                         1,
-                        lr,
+                        lr_scaled,
                         dropout,
                         batch_size,
                     );
                     net.record_training_file(class, path);
+                    step += 1;
                 }
                 Err(e) => {
                     eprintln!("Skipping {}: {}", path, e);
