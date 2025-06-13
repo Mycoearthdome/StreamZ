@@ -40,7 +40,7 @@ unlabelled.mp3
 Run the classifier:
 
 ```bash
-./target/release/StreamZ [--burn-in-limit <n>] [--max-speakers <n>]
+./target/release/StreamZ [--burn-in-limit <n>] [--max-speakers <n>] [--no-cache-wav]
 ```
 
 During the run every file listed in `train_files.txt` is processed.  If a line lacks a speaker label the program will attempt to match it against previously learned voices and will append the chosen label to the file.  Newly discovered speakers are added to the model automatically.  The updated model and list of files are written back to disk at the end of the run.
@@ -57,6 +57,8 @@ During the run every file listed in `train_files.txt` is processed.  If a line l
   of the dataset (between 10 and 50 files) is used.
 - `--max-speakers <n>` prevents unbounded growth of speaker classes. The
   default limit is the current number of speakers plus ten.
+- `--no-cache-wav` disables storing converted WAV files. Caching is enabled by
+  default for faster reuse.
 
 ## Threaded Components
 
