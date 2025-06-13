@@ -8,6 +8,7 @@ use ndarray::parallel::prelude::*;
 use ndarray::{s, Array1, Array2, Axis};
 use ndarray_npy::{NpzReader, NpzWriter};
 use rand::Rng;
+use rand::seq::SliceRandom;
 use rustdct::DctPlanner;
 use rustfft::{num_complex::Complex, FftPlanner};
 use std::io::BufReader;
@@ -177,28 +178,35 @@ pub fn pretrain_network(
     epochs: usize,
     lr: f32,
     dropout: f32,
+    batch_size: usize,
 ) -> f32 {
     let mut target = vec![0.0f32; num_classes];
     if target_class < num_classes {
         target[target_class] = 1.0;
     }
-    let aug_samples = augment(samples);
-    let windows = window_samples(&aug_samples);
+    let mut rng = rand::thread_rng();
     let mut total_loss = 0.0f32;
     let mut count = 0usize;
     for _ in 0..epochs {
-        for win in &windows {
-            let mut feats = win.clone();
-            apply_dropout(&mut feats, dropout);
-            let out = net.forward(&feats);
-            let loss: f32 = -target
-                .iter()
-                .zip(out.iter())
-                .map(|(t, o)| t * o.max(1e-12).ln())
-                .sum::<f32>();
-            total_loss += loss;
-            count += 1;
-            net.train(&feats, &target, lr);
+        let aug_samples = augment(samples);
+        let mut windows = window_samples(&aug_samples);
+        windows.shuffle(&mut rng);
+        for chunk in windows.chunks(batch_size.max(1)) {
+            let mut batch = Vec::with_capacity(chunk.len());
+            for win in chunk {
+                let mut feats = win.clone();
+                apply_dropout(&mut feats, dropout);
+                let out = net.forward(&feats);
+                let loss: f32 = -target
+                    .iter()
+                    .zip(out.iter())
+                    .map(|(t, o)| t * o.max(1e-12).ln())
+                    .sum::<f32>();
+                total_loss += loss;
+                count += 1;
+                batch.push(feats);
+            }
+            net.train_batch(&batch, &target, lr);
         }
     }
     if count > 0 {
@@ -287,6 +295,7 @@ pub fn train_from_files(
     epochs: usize,
     lr: f32,
     dropout: f32,
+    batch_size: usize,
 ) -> Result<(), Box<dyn Error>> {
     use indicatif::{ProgressBar, ProgressStyle};
     println!("Training on {} files individually", total_files);
@@ -314,7 +323,16 @@ pub fn train_from_files(
         for _ in 0..epochs {
             match load_audio_samples(path) {
                 Ok(samples) => {
-                    let _ = pretrain_network(net, &samples, class, num_speakers, 1, lr, dropout);
+                    let _ = pretrain_network(
+                        net,
+                        &samples,
+                        class,
+                        num_speakers,
+                        1,
+                        lr,
+                        dropout,
+                        batch_size,
+                    );
                     net.record_training_file(class, path);
                 }
                 Err(e) => {
@@ -496,6 +514,59 @@ impl SimpleNeuralNet {
         self.b2 -= &(grad_b2 * lr);
         self.w1 -= &(grad_w1 * lr);
         self.b1 -= &(grad_b1 * lr);
+    }
+
+    /// Train on a batch of feature vectors using the average gradient
+    pub fn train_batch(&mut self, batch: &[Vec<f32>], target: &[f32], lr: f32) {
+        if batch.is_empty() {
+            return;
+        }
+        let mut grad_w1 = Array2::<f32>::zeros(self.w1.raw_dim());
+        let mut grad_b1 = Array1::<f32>::zeros(self.b1.raw_dim());
+        let mut grad_w2 = Array2::<f32>::zeros(self.w2.raw_dim());
+        let mut grad_b2 = Array1::<f32>::zeros(self.b2.raw_dim());
+        let mut grad_w3 = Array2::<f32>::zeros((self.w3.nrows(), self.num_speakers));
+        let mut grad_b3 = Array1::<f32>::zeros(self.num_speakers);
+
+        for bits in batch {
+            let x = Array1::from_vec(bits.clone());
+            let t = Array1::from_vec(target.to_vec());
+            let h1_pre = x.dot(&self.w1) + &self.b1;
+            let h1 = h1_pre.mapv(|v| if v > 0.0 { v } else { 0.0 });
+            let h2_pre = h1.dot(&self.w2) + &self.b2;
+            let h2 = h2_pre.mapv(|v| if v > 0.0 { v } else { 0.0 });
+            let w3 = self.w3.slice(s![.., ..self.num_speakers]);
+            let b3 = self.b3.slice(s![..self.num_speakers]);
+            let out_pre = h2.dot(&w3) + &b3;
+            let max = out_pre.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let exp = out_pre.mapv(|v| (v - max).exp());
+            let sum = exp.sum();
+            let out = exp.mapv(|v| v / sum);
+
+            let delta_out = &out - &t;
+            grad_w3 += &h2.insert_axis(Axis(1)).dot(&delta_out.clone().insert_axis(Axis(0)));
+            grad_b3 += &delta_out;
+            let delta_h2 = delta_out.dot(&w3.t()) * h2_pre.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
+            grad_w2 += &h1.insert_axis(Axis(1)).dot(&delta_h2.clone().insert_axis(Axis(0)));
+            grad_b2 += &delta_h2;
+            let delta_h1 = delta_h2.dot(&self.w2.t()) * h1_pre.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
+            grad_w1 += &x.insert_axis(Axis(1)).dot(&delta_h1.clone().insert_axis(Axis(0)));
+            grad_b1 += &delta_h1;
+        }
+
+        let scale = lr / batch.len() as f32;
+        {
+            let mut w3_mut = self.w3.slice_mut(s![.., ..self.num_speakers]);
+            w3_mut -= &(grad_w3 * scale);
+        }
+        {
+            let mut b3_mut = self.b3.slice_mut(s![..self.num_speakers]);
+            b3_mut -= &(grad_b3 * scale);
+        }
+        self.w2 -= &(grad_w2 * scale);
+        self.b2 -= &(grad_b2 * scale);
+        self.w1 -= &(grad_w1 * scale);
+        self.b1 -= &(grad_b1 * scale);
     }
 
     pub fn save(&self, path: &str) -> Result<(), Box<dyn Error>> {
