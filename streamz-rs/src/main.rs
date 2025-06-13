@@ -521,10 +521,6 @@ fn main() {
         println!("Average training loss: {:.4}", final_loss / count as f32);
     }
 
-    if let Err(e) = net.save(MODEL_PATH) {
-        eprintln!("Failed to save model: {}", e);
-    }
-
     write_train_files(TRAIN_FILE_LIST, &train_files);
     println!("Updated training file labels:");
     for (p, c) in &train_files {
@@ -538,5 +534,9 @@ fn main() {
     println!("Number of speakers discovered: {}", net.output_size());
     for (i, files) in net.file_lists().iter().enumerate() {
         println!("Speaker {}: {} samples", i, files.len());
+    }
+
+    if let Err(e) = net.save(MODEL_PATH) {
+        eprintln!("Failed to save model: {}", e);
     }
 }
