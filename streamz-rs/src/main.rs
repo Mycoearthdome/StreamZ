@@ -5,8 +5,8 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use streamz_rs::{
-    compute_speaker_embeddings, identify_speaker_cosine, load_audio_samples, pretrain_network,
-    train_from_files, SimpleNeuralNet, FEATURE_SIZE,
+    identify_speaker_with_threshold, load_audio_samples, pretrain_network, train_from_files,
+    SimpleNeuralNet, FEATURE_SIZE,
 };
 
 const MODEL_PATH: &str = "model.npz";
@@ -141,19 +141,16 @@ fn main() {
                 .into_iter()
                 .map(|p| (p, cls))
                 .collect();
-            let train_part: Vec<(String, usize)> =
-                paths.into_iter().map(|p| (p, cls)).collect();
+            let train_part: Vec<(String, usize)> = paths.into_iter().map(|p| (p, cls)).collect();
             eval_set.extend(eval_part);
             train_refs_owned.extend(train_part);
         }
-        let train_refs: Vec<(&str, usize)> =
-            train_refs_owned.iter().map(|(p, c)| (p.as_str(), *c)).collect();
-        let mut net = SimpleNeuralNet::new(
-            FEATURE_SIZE,
-            256,
-            128,
-            count_speakers(&train_files).max(1),
-        );
+        let train_refs: Vec<(&str, usize)> = train_refs_owned
+            .iter()
+            .map(|(p, c)| (p.as_str(), *c))
+            .collect();
+        let mut net =
+            SimpleNeuralNet::new(FEATURE_SIZE, 256, 128, count_speakers(&train_files).max(1));
         if !train_refs.is_empty() {
             let out_sz = net.output_size();
             let _ = train_from_files(
@@ -167,7 +164,6 @@ fn main() {
                 BATCH_SIZE,
             );
         }
-        let embeds = compute_speaker_embeddings(&net).unwrap_or_default();
         let total = eval_set.len();
         let mut correct = 0usize;
         let mut tp = 0usize;
@@ -176,7 +172,7 @@ fn main() {
         for (path, class) in &eval_set {
             match load_audio_samples(path) {
                 Ok(samples) => {
-                    match identify_speaker_cosine(&net, &embeds, &samples, conf_threshold) {
+                    match identify_speaker_with_threshold(&net, &samples, conf_threshold) {
                         Some(pred) => {
                             if pred == *class {
                                 tp += 1;
@@ -280,8 +276,6 @@ fn main() {
         })
         .collect();
 
-    let mut speaker_embeds = compute_speaker_embeddings(&net).unwrap_or_default();
-
     let mut total_loss = 0.0f32;
     let mut loss_count = 0usize;
     for ((path, class), result) in train_files.iter_mut().zip(preload) {
@@ -304,7 +298,7 @@ fn main() {
                     loss_count += 1;
                     net.record_training_file(label, path);
                 } else if let Some(pred) =
-                    identify_speaker_cosine(&net, &speaker_embeds, &samples, conf_threshold)
+                    identify_speaker_with_threshold(&net, &samples, conf_threshold)
                 {
                     *class = Some(pred);
                     let sz = net.output_size();
@@ -351,16 +345,16 @@ fn main() {
 
     pb.finish_and_clear();
     if loss_count > 0 {
-        println!("Average training loss: {:.4}", total_loss / loss_count as f32);
+        println!(
+            "Average training loss: {:.4}",
+            total_loss / loss_count as f32
+        );
     }
 
     if let Err(e) = net.save(MODEL_PATH) {
         eprintln!("Failed to save model: {}", e);
     }
 
-    // Refresh speaker embeddings at the end of the epoch instead of after
-    // every sample to avoid redundant computation.
-    speaker_embeds = compute_speaker_embeddings(&net).unwrap_or_default();
     write_train_files(TRAIN_FILE_LIST, &train_files);
     println!("Updated training file labels:");
     for (p, c) in &train_files {
