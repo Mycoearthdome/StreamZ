@@ -5,8 +5,9 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use streamz_rs::{
-    compute_speaker_embeddings, identify_speaker_cosine, identify_speaker_with_threshold,
-    load_audio_samples, pretrain_network, train_from_files, SimpleNeuralNet, FEATURE_SIZE,
+    compute_speaker_embeddings, identify_speaker_cosine_feats,
+    identify_speaker_with_threshold, load_audio_samples, load_cached_features,
+    pretrain_from_features, train_from_files, SimpleNeuralNet, FEATURE_SIZE,
 };
 
 const MODEL_PATH: &str = "model.npz";
@@ -19,7 +20,7 @@ const DEFAULT_CONF_THRESHOLD: f32 = 0.8;
 /// value is provided via `--burn-in-limit`.
 const DEFAULT_BURN_IN_FRAC: f32 = 0.2;
 /// Number of training epochs for each file.
-const TRAIN_EPOCHS: usize = 15;
+const TRAIN_EPOCHS: usize = 10;
 /// Dropout probability used during training.
 const DROPOUT_PROB: f32 = streamz_rs::DEFAULT_DROPOUT;
 /// Number of feature windows per training batch.
@@ -154,7 +155,7 @@ fn main() {
     if eval_mode {
         use rand::seq::SliceRandom;
         let mut rng = rand::thread_rng();
-        let mut labelled: Vec<(String, usize)> = train_files
+        let labelled: Vec<(String, usize)> = train_files
             .iter()
             .filter_map(|(p, c)| c.map(|cls| (p.clone(), cls)))
             .collect();
@@ -306,8 +307,8 @@ fn main() {
     let preload: Vec<_> = train_files
         .par_iter()
         .map(|(path, class)| {
-            load_audio_samples(path)
-                .map(|samples| (path.clone(), *class, samples))
+            load_cached_features(path)
+                .map(|wins| (path.clone(), *class, wins))
                 .map_err(|e| e.to_string())
         })
         .collect();
@@ -318,16 +319,16 @@ fn main() {
     for ((path, class), result) in train_files.iter_mut().zip(preload) {
         pb.set_message(path.to_string());
         match result {
-            Ok((_, _, samples)) => {
+            Ok((_, _, windows)) => {
                 let progress = (loss_count as f32 / burn_in_limit as f32).clamp(0.0, 1.0);
                 let dynamic_threshold =
                     conf_threshold + (0.95 - conf_threshold) * (1.0 - progress);
                 if let Some(label) = *class {
                     let sz = net.output_size();
                     let lr = 0.01 * (0.99f32).powi(loss_count as i32);
-                    let loss = pretrain_network(
+                    let loss = pretrain_from_features(
                         &mut net,
-                        &samples,
+                        &windows,
                         label,
                         sz,
                         TRAIN_EPOCHS,
@@ -339,14 +340,14 @@ fn main() {
                     loss_count += 1;
                     net.record_training_file(label, path);
                 } else if let Some(pred) =
-                    identify_speaker_cosine(&net, &embeddings, &samples, dynamic_threshold)
+                    identify_speaker_cosine_feats(&net, &embeddings, &windows, dynamic_threshold)
                 {
                     *class = Some(pred);
                     let sz = net.output_size();
                     let lr = 0.01 * (0.99f32).powi(loss_count as i32);
-                    let loss = pretrain_network(
+                    let loss = pretrain_from_features(
                         &mut net,
-                        &samples,
+                        &windows,
                         pred,
                         sz,
                         TRAIN_EPOCHS,
@@ -364,9 +365,9 @@ fn main() {
                     *class = Some(new_label);
                     let sz = net.output_size();
                     let lr = 0.01 * (0.99f32).powi(loss_count as i32);
-                    let loss = pretrain_network(
+                    let loss = pretrain_from_features(
                         &mut net,
-                        &samples,
+                        &windows,
                         new_label,
                         sz,
                         TRAIN_EPOCHS,

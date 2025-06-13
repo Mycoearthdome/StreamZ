@@ -6,7 +6,7 @@ use mel_filter::{mel, NormalizationFactor};
 use minimp3::{Decoder, Error as Mp3Error, Frame};
 use ndarray::parallel::prelude::*;
 use ndarray::{s, Array1, Array2, Axis};
-use ndarray_npy::{NpzReader, NpzWriter};
+use ndarray_npy::{read_npy, write_npy, NpzReader, NpzWriter};
 use rand::seq::SliceRandom;
 use rand::Rng;
 use rustdct::DctPlanner;
@@ -18,10 +18,15 @@ use std::error::Error;
 use std::fs::File;
 
 const DEFAULT_SAMPLE_RATE: u32 = 44100;
-pub const WINDOW_SIZE: usize = 1024;
+pub const WINDOW_SIZE: usize = 800;
 const N_MELS: usize = 26;
 pub const MFCC_SIZE: usize = 20;
-pub const FEATURE_SIZE: usize = MFCC_SIZE * 3;
+pub const WITH_DELTAS: bool = true;
+pub const FEATURE_SIZE: usize = if WITH_DELTAS {
+    MFCC_SIZE * 3
+} else {
+    MFCC_SIZE
+};
 /// Default dropout probability applied during training.
 pub const DEFAULT_DROPOUT: f32 = 0.2;
 
@@ -292,6 +297,81 @@ pub fn audio_metadata(path: &str) -> Result<(u32, u16), Box<dyn Error>> {
     } else {
         let spec = hound::WavReader::open(path)?.spec();
         Ok((DEFAULT_SAMPLE_RATE, spec.bits_per_sample))
+    }
+}
+
+/// Path for cached feature files corresponding to an audio path.
+fn feature_cache_path(path: &str) -> std::path::PathBuf {
+    let cache_dir = std::path::Path::new("feature_cache");
+    let _ = std::fs::create_dir_all(cache_dir);
+    let sanitized = path.replace('/', "_").replace('\\', "_");
+    cache_dir.join(format!("{}.npy", sanitized))
+}
+
+/// Load cached MFCC features for a file or compute and store them if missing.
+pub fn load_cached_features(path: &str) -> Result<Vec<Vec<f32>>, Box<dyn Error>> {
+    let cache = feature_cache_path(path);
+    if cache.exists() {
+        let arr: Array2<f32> = read_npy(&cache)?;
+        let mut feats = Vec::with_capacity(arr.nrows());
+        for row in arr.outer_iter() {
+            feats.push(row.to_vec());
+        }
+        return Ok(feats);
+    }
+    let samples = load_audio_samples(path)?;
+    let feats = window_samples(&samples);
+    if !feats.is_empty() {
+        let flat: Vec<f32> = feats.iter().flat_map(|v| v.clone()).collect();
+        let arr = Array2::from_shape_vec((feats.len(), feats[0].len()), flat)?;
+        let _ = write_npy(&cache, &arr);
+    }
+    Ok(feats)
+}
+
+/// Train the network using feature windows instead of raw audio.
+pub fn pretrain_from_features(
+    net: &mut SimpleNeuralNet,
+    windows: &[Vec<f32>],
+    target_class: usize,
+    num_classes: usize,
+    epochs: usize,
+    lr: f32,
+    dropout: f32,
+    batch_size: usize,
+) -> f32 {
+    let mut target = vec![0.0f32; num_classes];
+    if target_class < num_classes {
+        target[target_class] = 1.0;
+    }
+    let mut rng = rand::thread_rng();
+    let mut total_loss = 0.0f32;
+    let mut count = 0usize;
+    for _ in 0..epochs {
+        let mut wins: Vec<Vec<f32>> = windows.to_vec();
+        wins.shuffle(&mut rng);
+        for chunk in wins.chunks(batch_size.max(1)) {
+            let mut batch = Vec::with_capacity(chunk.len());
+            for win in chunk {
+                let mut feats = win.clone();
+                apply_dropout(&mut feats, dropout);
+                let out = net.forward(&feats);
+                let loss: f32 = -target
+                    .iter()
+                    .zip(out.iter())
+                    .map(|(t, o)| t * o.max(1e-12).ln())
+                    .sum::<f32>();
+                total_loss += loss;
+                count += 1;
+                batch.push(feats);
+            }
+            net.train_batch(&batch, &target, lr);
+        }
+    }
+    if count > 0 {
+        total_loss / count as f32
+    } else {
+        0.0
     }
 }
 
@@ -833,6 +913,33 @@ pub fn extract_embedding(net: &SimpleNeuralNet, sample: &[i16]) -> Vec<f32> {
     emb
 }
 
+/// Compute an embedding from precomputed feature windows.
+pub fn extract_embedding_from_features(
+    net: &SimpleNeuralNet,
+    windows: &[Vec<f32>],
+) -> Vec<f32> {
+    let mut wins = Vec::new();
+    for win in windows {
+        wins.push(net.embed(win));
+    }
+    if wins.is_empty() {
+        return vec![0.0; net.embedding_size()];
+    }
+    let mut emb = vec![0.0f32; net.embedding_size()];
+    for i in 0..net.embedding_size() {
+        let mut vals: Vec<f32> = wins.iter().map(|v| v[i]).collect();
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mid = vals.len() / 2;
+        emb[i] = if vals.len() % 2 == 0 {
+            (vals[mid - 1] + vals[mid]) / 2.0
+        } else {
+            vals[mid]
+        };
+    }
+    normalize(&mut emb);
+    emb
+}
+
 /// Calculate cosine similarity between two embedding vectors
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
@@ -864,8 +971,8 @@ pub fn compute_speaker_embeddings(
     for files in net.file_lists.iter().take(net.output_size()) {
         let mut embeds = Vec::new();
         for path in files {
-            if let Ok(samples) = load_audio_samples(path) {
-                let emb = extract_embedding(net, &samples);
+            if let Ok(wins) = load_cached_features(path) {
+                let emb = extract_embedding_from_features(net, &wins);
                 embeds.push(emb);
             }
         }
@@ -914,6 +1021,33 @@ pub fn identify_speaker_cosine(
         return None;
     }
     let emb = extract_embedding(net, sample);
+    let mut best_idx = None;
+    let mut best_val = threshold;
+    for (i, (mean, mean_sim, std_sim)) in speaker_embeds.iter().enumerate() {
+        let sim = cosine_similarity(&emb, mean);
+        if sim < (mean_sim - 2.0 * *std_sim) {
+            continue;
+        }
+        let accept_threshold = (mean_sim + *std_sim).max(threshold);
+        if sim >= accept_threshold && sim > best_val {
+            best_val = sim;
+            best_idx = Some(i);
+        }
+    }
+    best_idx
+}
+
+/// Identify a speaker using precomputed feature windows.
+pub fn identify_speaker_cosine_feats(
+    net: &SimpleNeuralNet,
+    speaker_embeds: &[(Vec<f32>, f32, f32)],
+    windows: &[Vec<f32>],
+    threshold: f32,
+) -> Option<usize> {
+    if speaker_embeds.is_empty() {
+        return None;
+    }
+    let emb = extract_embedding_from_features(net, windows);
     let mut best_idx = None;
     let mut best_val = threshold;
     for (i, (mean, mean_sim, std_sim)) in speaker_embeds.iter().enumerate() {
