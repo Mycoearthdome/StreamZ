@@ -176,23 +176,42 @@ fn add_deltas(mfcc: &[Vec<f32>]) -> Vec<Vec<f32>> {
     out
 }
 
+/// Precomputed FFT, DCT and Mel filters for efficient feature extraction.
+pub struct FeatureExtractor {
+    fft: Arc<dyn Fft<f32>>,
+    dct: Arc<dyn TransformType2And3<f32>>,
+    mel_filters: Vec<Vec<f32>>,
+}
+
+impl FeatureExtractor {
+    /// Create a new extractor with cached transform plans.
+    pub fn new() -> Self {
+        let mel_filters = mel::<f32>(
+            DEFAULT_SAMPLE_RATE as usize,
+            WINDOW_SIZE,
+            Some(N_MELS),
+            None,
+            None,
+            false,
+            NormalizationFactor::One,
+        );
+        let mut fft_planner = FftPlanner::<f32>::new();
+        let fft = fft_planner.plan_fft_forward(WINDOW_SIZE);
+        let mut dct_planner = DctPlanner::<f32>::new();
+        let dct = dct_planner.plan_dct2(N_MELS);
+        Self { fft, dct, mel_filters }
+    }
+
+    /// Extract MFCC features from a slice of samples.
+    pub fn extract(&self, samples: &[i16]) -> Vec<Vec<f32>> {
+        window_samples_with_plan(samples, &self.mel_filters, &self.fft, &self.dct)
+    }
+}
+
 /// Split samples into windows and compute MFCC features for each window.
 fn window_samples(samples: &[i16]) -> Vec<Vec<f32>> {
-    let mel_filters = mel::<f32>(
-        DEFAULT_SAMPLE_RATE as usize,
-        WINDOW_SIZE,
-        Some(N_MELS),
-        None,
-        None,
-        false,
-        NormalizationFactor::One,
-    );
-    let mut fft_planner = FftPlanner::<f32>::new();
-    let fft = fft_planner.plan_fft_forward(WINDOW_SIZE);
-    let mut dct_planner = DctPlanner::<f32>::new();
-    let dct = dct_planner.plan_dct2(N_MELS);
-
-    window_samples_with_plan(samples, &mel_filters, &fft, &dct)
+    static EXTRACTOR: Lazy<FeatureExtractor> = Lazy::new(FeatureExtractor::new);
+    EXTRACTOR.extract(samples)
 }
 
 /// Split samples into windows using precomputed transform plans.
