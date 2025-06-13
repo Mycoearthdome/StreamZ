@@ -20,7 +20,7 @@ use std::error::Error;
 use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
 pub const WINDOW_SIZE: usize = 800;
@@ -562,7 +562,7 @@ pub fn pretrain_from_features(
 
 /// Train the network using a list of `(path, class)` tuples containing WAV files.
 pub fn train_from_files(
-    net: Arc<Mutex<SimpleNeuralNet>>,
+    net: Arc<RwLock<SimpleNeuralNet>>,
     files: &[(&str, usize)],
     total_files: usize,
     num_speakers: usize,
@@ -597,14 +597,14 @@ pub fn train_from_files(
         };
 
         {
-            let mut guard = net.lock().unwrap();
+            let mut guard = net.write().unwrap();
             // All audio is resampled to DEFAULT_SAMPLE_RATE and 16 bits
             guard.set_dataset_specs(DEFAULT_SAMPLE_RATE, 16);
         }
 
         for _ in 0..epochs {
             let lr_scaled = lr * (0.99f32).powi(step.fetch_add(1, Ordering::SeqCst));
-            let mut guard = net.lock().unwrap();
+            let mut guard = net.write().unwrap();
             with_thread_extractor(|ext| {
                 let _ = pretrain_network(
                     &mut *guard,
