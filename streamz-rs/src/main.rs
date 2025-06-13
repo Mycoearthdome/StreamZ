@@ -499,16 +499,10 @@ fn main() {
                     }
                 }
 
-                // Save periodically
-                if loss_count.load(Ordering::SeqCst) % 10 == 0 {
-                    if let Err(e) = net.save(MODEL_PATH) {
-                        eprintln!("Failed to save model: {}", e);
-                    }
-                    *embeds = compute_speaker_embeddings(&net, extractor).unwrap_or_default();
-                }
-            } else {
-                eprintln!("Missing audio for {}", path);
             }
+        } else {
+            eprintln!("Missing audio for {}", path);
+        }
 
             pb_arc.inc(1);
         });
