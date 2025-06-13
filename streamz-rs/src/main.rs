@@ -15,6 +15,9 @@ const TRAIN_FILE_LIST: &str = "train_files.txt";
 /// Higher values make the program less eager to reuse a known speaker
 /// and instead create a new one when confidence is low.
 const DEFAULT_CONF_THRESHOLD: f32 = 0.8;
+/// Fraction of the dataset used for the early burn-in phase when no
+/// value is provided via `--burn-in-limit`.
+const DEFAULT_BURN_IN_FRAC: f32 = 0.2;
 /// Number of training epochs for each file.
 const TRAIN_EPOCHS: usize = 15;
 /// Dropout probability used during training.
@@ -78,6 +81,8 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let mut conf_threshold = DEFAULT_CONF_THRESHOLD;
     let mut eval_split = 0.2f32;
+    let mut burn_in_limit: Option<usize> = None;
+    let mut max_speakers: Option<usize> = None;
     let eval_mode = args.iter().any(|a| a == "--eval");
     if let Some(idx) = args.iter().position(|a| a == "--threshold") {
         if let Some(val) = args.get(idx + 1) {
@@ -108,12 +113,43 @@ fn main() {
             eprintln!("Missing value for --eval-split, using default 0.2");
         }
     }
+    if let Some(idx) = args.iter().position(|a| a == "--burn-in-limit") {
+        if let Some(val) = args.get(idx + 1) {
+            match val.parse::<usize>() {
+                Ok(v) => burn_in_limit = Some(v),
+                Err(_) => eprintln!(
+                    "Invalid value for --burn-in-limit '{}', using automatic setting",
+                    val
+                ),
+            }
+        } else {
+            eprintln!("Missing value for --burn-in-limit, using automatic setting");
+        }
+    }
+    if let Some(idx) = args.iter().position(|a| a == "--max-speakers") {
+        if let Some(val) = args.get(idx + 1) {
+            match val.parse::<usize>() {
+                Ok(v) => max_speakers = Some(v),
+                Err(_) => eprintln!(
+                    "Invalid value for --max-speakers '{}', using automatic setting",
+                    val
+                ),
+            }
+        } else {
+            eprintln!("Missing value for --max-speakers, using automatic setting");
+        }
+    }
 
     let mut train_files = load_train_files(TRAIN_FILE_LIST);
     if train_files.is_empty() {
         eprintln!("{} is empty", TRAIN_FILE_LIST);
         return;
     }
+
+    let dataset_size = train_files.len();
+    let burn_in_default = ((dataset_size as f32) * DEFAULT_BURN_IN_FRAC).ceil() as usize;
+    let burn_in_limit = burn_in_limit.unwrap_or_else(|| burn_in_default.clamp(10, 50));
+    let max_speakers = max_speakers.unwrap_or_else(|| count_speakers(&train_files) + 10);
 
     if eval_mode {
         use rand::seq::SliceRandom;
@@ -283,7 +319,7 @@ fn main() {
         pb.set_message(path.to_string());
         match result {
             Ok((_, _, samples)) => {
-                let dynamic_threshold = if loss_count < 50 {
+                let dynamic_threshold = if loss_count < burn_in_limit {
                     0.95
                 } else {
                     conf_threshold
@@ -324,7 +360,7 @@ fn main() {
                     loss_count += 1;
                     net.record_training_file(pred, path);
                     embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
-                } else {
+                } else if net.output_size() < max_speakers {
                     net.add_output_class();
                     let new_label = net.output_size() - 1;
                     *class = Some(new_label);
@@ -344,6 +380,8 @@ fn main() {
                     loss_count += 1;
                     net.record_training_file(new_label, path);
                     embeddings = compute_speaker_embeddings(&net).unwrap_or_default();
+                } else {
+                    eprintln!("Skipping {}: speaker limit {} reached", path, max_speakers);
                 }
                 if let Err(e) = net.save(MODEL_PATH) {
                     eprintln!("Failed to save model: {}", e);
