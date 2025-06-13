@@ -19,9 +19,8 @@ use std::error::Error;
 use std::fs::File;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicBool, Ordering};
 use once_cell::sync::Lazy;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
 pub const WINDOW_SIZE: usize = 800;
