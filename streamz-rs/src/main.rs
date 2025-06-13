@@ -15,7 +15,7 @@ use streamz_rs::{
     batch_resample, compute_speaker_embeddings, identify_speaker_cosine_feats,
     identify_speaker_with_threshold, load_and_resample_file, load_audio_samples,
     pretrain_from_features, set_wav_cache_enabled, train_from_files, wav_cache_enabled,
-    FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
+    FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE, with_thread_extractor,
 
 };
 
