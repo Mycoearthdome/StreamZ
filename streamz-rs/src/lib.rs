@@ -777,12 +777,14 @@ pub fn identify_speaker_list(net: &SimpleNeuralNet, sample: &[i16], threshold: f
 
 /// Compute the average embedding vector for an audio sample
 pub fn extract_embedding(net: &SimpleNeuralNet, sample: &[i16]) -> Vec<f32> {
-    let mut sum = vec![0.0f32; net.embedding_size()];
+    let mut sum = vec![0.0f32; net.output_size()];
     let mut count = 0f32;
     for win in window_samples(sample) {
-        let emb = net.embed(&win);
-        for (i, v) in emb.iter().enumerate() {
-            sum[i] += *v;
+        let out = net.forward(&win);
+        for (i, v) in out.iter().enumerate() {
+            if i < sum.len() {
+                sum[i] += *v;
+            }
         }
         count += 1.0;
     }
@@ -815,7 +817,7 @@ pub fn compute_speaker_embeddings(net: &SimpleNeuralNet) -> Result<Vec<Vec<f32>>
     let embeds: Vec<Vec<f32>> = net.file_lists[..net.output_size()]
         .par_iter()
         .map(|files| {
-            let mut sum = vec![0.0f32; net.embedding_size()];
+            let mut sum = vec![0.0f32; net.output_size()];
             let mut count = 0f32;
             for path in files {
                 if let Ok(samples) = load_audio_samples(path) {
