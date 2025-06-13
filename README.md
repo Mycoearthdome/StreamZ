@@ -1,6 +1,6 @@
 # StreamZ
 
-StreamZ is a small Rust application that trains and executes a simple neural network to classify short MP3 (or WAV) recordings by speaker.  The project demonstrates how to read raw audio, convert it into MFCC feature windows and incrementally learn new speakers from a list of files.
+StreamZ is a small Rust application that trains and executes a simple neural network to classify short MP3 or WAV recordings by speaker. It demonstrates how to read raw audio, convert it into MFCC + delta feature windows and incrementally learn new speakers from a list of files.
 
 ## Features
 
@@ -14,6 +14,8 @@ StreamZ is a small Rust application that trains and executes a simple neural net
 - Automatically resamples all audio to 44.1kHz for consistent processing.
 - A helper function `identify_speaker_list` returns all detected speakers in
   a recording based on per-window predictions.
+- Optionally caches MFCC + delta feature windows for each audio file as `.npy` in
+  `feature_cache/` so repeated runs skip expensive extraction.
 
 ## Installation
 
@@ -44,6 +46,13 @@ Run the classifier:
 ```
 
 During the run every file listed in `train_files.txt` is processed.  If a line lacks a speaker label the program will attempt to match it against previously learned voices and will append the chosen label to the file.  Newly discovered speakers are added to the model automatically.  The updated model and list of files are written back to disk at the end of the run.
+
+## Feature Caching
+
+When an audio file is first processed its MFCC + delta feature windows can be saved
+to `feature_cache/<name>.npy`. Subsequent runs load these cached arrays using the
+`load_cached_features` helper which avoids recomputing features every time. This
+greatly speeds up repeated training or evaluation on the same dataset.
 
 ## Training Tips
 
