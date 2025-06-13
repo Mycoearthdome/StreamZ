@@ -2,6 +2,7 @@
 // use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 // use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use hound;
+use std::io::BufReader;
 use mel_filter::{mel, NormalizationFactor};
 use minimp3::{Decoder, Error as Mp3Error, Frame};
 use ndarray::{s, Array1, Array2, Axis};
@@ -201,7 +202,8 @@ pub fn pretrain_network(
 
 /// Load all samples from a 16-bit mono WAV file.
 pub fn load_wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
-    let mut reader = hound::WavReader::open(path)?;
+    let file = File::open(path)?;
+    let mut reader = hound::WavReader::new(BufReader::new(file))?;
     if reader.spec().bits_per_sample != 16 {
         return Err("Only 16-bit audio supported".into());
     }
@@ -214,7 +216,8 @@ pub fn load_wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
 /// Load samples from an MP3 file using the `minimp3` decoder. Returns the
 /// decoded samples along with the detected sample rate.
 pub fn load_mp3_samples(path: &str) -> Result<(Vec<i16>, u32), Box<dyn Error>> {
-    let mut decoder = Decoder::new(File::open(path)?);
+    let file = File::open(path)?;
+    let mut decoder = Decoder::new(BufReader::new(file));
     let mut samples = Vec::new();
     let mut sample_rate = 0u32;
     loop {
@@ -254,7 +257,8 @@ pub fn load_audio_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
 /// Supports WAV and MP3 formats.
 pub fn audio_metadata(path: &str) -> Result<(u32, u16), Box<dyn Error>> {
     if path.to_ascii_lowercase().ends_with(".mp3") {
-        let mut decoder = Decoder::new(File::open(path)?);
+        let file = File::open(path)?;
+        let mut decoder = Decoder::new(BufReader::new(file));
         if let Ok(Frame { .. }) = decoder.next_frame() {
             Ok((DEFAULT_SAMPLE_RATE, 16))
         } else {
@@ -415,8 +419,8 @@ impl SimpleNeuralNet {
     /// Forward pass on a slice of f32 values
     pub fn forward(&self, bits: &[f32]) -> Vec<f32> {
         let x = Array1::from_vec(bits.to_vec());
-        let h1 = (x.dot(&self.w1) + &self.b1).mapv(|v| v.tanh());
-        let h2 = (h1.dot(&self.w2) + &self.b2).mapv(|v| v.tanh());
+        let h1 = (x.dot(&self.w1) + &self.b1).mapv(|v| if v > 0.0 { v } else { 0.0 });
+        let h2 = (h1.dot(&self.w2) + &self.b2).mapv(|v| if v > 0.0 { v } else { 0.0 });
         let w3 = self.w3.slice(s![.., ..self.num_speakers]);
         let b3 = self.b3.slice(s![..self.num_speakers]);
         let out = h2.dot(&w3) + &b3;
@@ -429,8 +433,8 @@ impl SimpleNeuralNet {
     /// Extract the hidden layer activation as an embedding vector
     pub fn embed(&self, bits: &[f32]) -> Vec<f32> {
         let x = Array1::from_vec(bits.to_vec());
-        let h1 = (x.dot(&self.w1) + &self.b1).mapv(|v| v.tanh());
-        let h2 = (h1.dot(&self.w2) + &self.b2).mapv(|v| v.tanh());
+        let h1 = (x.dot(&self.w1) + &self.b1).mapv(|v| if v > 0.0 { v } else { 0.0 });
+        let h2 = (h1.dot(&self.w2) + &self.b2).mapv(|v| if v > 0.0 { v } else { 0.0 });
         h2.to_vec()
     }
 
@@ -444,9 +448,9 @@ impl SimpleNeuralNet {
         let x = Array1::from_vec(bits.to_vec());
         let t = Array1::from_vec(target.to_vec());
         let h1_pre = x.dot(&self.w1) + &self.b1;
-        let h1 = h1_pre.mapv(|v| v.tanh());
+        let h1 = h1_pre.mapv(|v| if v > 0.0 { v } else { 0.0 });
         let h2_pre = h1.dot(&self.w2) + &self.b2;
-        let h2 = h2_pre.mapv(|v| v.tanh());
+        let h2 = h2_pre.mapv(|v| if v > 0.0 { v } else { 0.0 });
         let w3 = self.w3.slice(s![.., ..self.num_speakers]);
         let b3 = self.b3.slice(s![..self.num_speakers]);
         let out_pre = h2.dot(&w3) + &b3;
@@ -460,12 +464,12 @@ impl SimpleNeuralNet {
             .insert_axis(Axis(1))
             .dot(&delta_out.clone().insert_axis(Axis(0)));
         let grad_b3 = delta_out.clone();
-        let delta_h2 = delta_out.dot(&w3.t()) * h2_pre.mapv(|v| 1.0 - v.tanh().powi(2));
+        let delta_h2 = delta_out.dot(&w3.t()) * h2_pre.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
         let grad_w2 = h1
             .insert_axis(Axis(1))
             .dot(&delta_h2.clone().insert_axis(Axis(0)));
         let grad_b2 = delta_h2.clone();
-        let delta_h1 = delta_h2.dot(&self.w2.t()) * h1_pre.mapv(|v| 1.0 - v.tanh().powi(2));
+        let delta_h1 = delta_h2.dot(&self.w2.t()) * h1_pre.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
         let grad_w1 = x
             .insert_axis(Axis(1))
             .dot(&delta_h1.clone().insert_axis(Axis(0)));

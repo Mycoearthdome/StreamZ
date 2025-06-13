@@ -22,7 +22,7 @@ StreamZ is a small Rust application that trains and executes a simple neural net
 
 ```bash
 cd streamz-rs
-cargo build --release
+RUSTFLAGS="-C target-cpu=native" cargo build --release
 ```
 
 This produces the `StreamZ` binary in `target/release/`.
