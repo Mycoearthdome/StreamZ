@@ -99,17 +99,23 @@ pub fn resample_to_44100(samples: &[i16], from_rate: u32) -> Result<Vec<i16>, Bo
         return Ok(samples.to_vec());
     }
     let chunk_size = 1024;
-    let input: Vec<Vec<f32>> = vec![samples.iter().map(|&s| i16_to_f32(s)).collect()];
+    let input: Vec<f32> = samples.iter().map(|&s| i16_to_f32(s)).collect();
     let mut resampler = FftFixedInOut::<f32>::new(
         from_rate as usize,
         DEFAULT_SAMPLE_RATE as usize,
         chunk_size,
         1,
     )?;
-    let output = resampler.process(&input, None)?;
-    let mut result = Vec::with_capacity(output[0].len());
-    for frame in &output[0] {
-        result.push((frame * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16);
+    let mut result = Vec::new();
+    for chunk in input.chunks(chunk_size) {
+        let mut padded = chunk.to_vec();
+        if padded.len() < chunk_size {
+            padded.resize(chunk_size, 0.0);
+        }
+        let output = resampler.process(&[padded], None)?;
+        for frame in &output[0] {
+            result.push((frame * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16);
+        }
     }
     Ok(result)
 }
