@@ -456,19 +456,7 @@ impl SimpleNeuralNet {
         (exp / sum).to_vec()
     }
 
-    /// Extract the hidden layer activation as an embedding vector
-    pub fn embed(&self, bits: &[f32]) -> Vec<f32> {
-        let x = Array1::from_vec(bits.to_vec());
-        let h1 = (x.dot(&self.w1) + &self.b1).mapv(|v| if v > 0.0 { v } else { 0.0 });
-        let mut h2 = (h1.dot(&self.w2) + &self.b2).mapv(|v| v.tanh()).to_vec();
-        normalize(&mut h2);
-        h2
-    }
 
-    /// Return the size of the embedding vector
-    pub fn embedding_size(&self) -> usize {
-        self.w2.ncols()
-    }
 
     /// Single-step training using cross entropy loss
     pub fn train(&mut self, bits: &[f32], target: &[f32], lr: f32) {
