@@ -18,7 +18,7 @@ use std::error::Error;
 use std::fs::File;
 use std::path::Path;
 
-const DEFAULT_SAMPLE_RATE: u32 = 44100;
+pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
 pub const WINDOW_SIZE: usize = 800;
 const N_MELS: usize = 26;
 pub const MFCC_SIZE: usize = 20;
@@ -99,17 +99,16 @@ pub fn resample_to_44100(samples: &[i16], from_rate: u32) -> Result<Vec<i16>, Bo
         return Ok(samples.to_vec());
     }
 
-    let input: Vec<Vec<f32>> = vec![samples.iter().map(|&s| s as f32 / i16::MAX as f32).collect()];
+    let input: Vec<Vec<f32>> = vec![samples
+        .iter()
+        .map(|&s| s as f32 / i16::MAX as f32)
+        .collect()];
     let frames_in = input[0].len();
     let frames_out = (frames_in * DEFAULT_SAMPLE_RATE as usize) / from_rate as usize;
     let mut output = vec![vec![0.0f32; frames_out]];
 
-    let mut resampler = FftFixedInOut::<f32>::new(
-        from_rate as usize,
-        DEFAULT_SAMPLE_RATE as usize,
-        1024,
-        1,
-    )?;
+    let mut resampler =
+        FftFixedInOut::<f32>::new(from_rate as usize, DEFAULT_SAMPLE_RATE as usize, 1024, 1)?;
 
     resampler.process_into_buffer(&input, &mut output, None)?;
 
@@ -315,8 +314,7 @@ pub fn load_audio_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
                 .map_err(|e| Box::<dyn Error>::from(e));
         }
 
-        let (_, resampled) =
-            load_and_resample_file(path).map_err(|e| Box::<dyn Error>::from(e))?;
+        let (_, resampled) = load_and_resample_file(path).map_err(|e| Box::<dyn Error>::from(e))?;
 
         // Save WAV to cache
         let mut writer = hound::WavWriter::create(
@@ -377,7 +375,8 @@ pub fn load_and_resample_file(path: &str) -> Result<(String, Vec<i16>), String> 
                 .filter_map(Result::ok)
                 .collect();
             let mono = downmix_to_mono(&samples, channels);
-            let resampled = resample_to_44100(&mono, spec.sample_rate).map_err(|e| e.to_string())?;
+            let resampled =
+                resample_to_44100(&mono, spec.sample_rate).map_err(|e| e.to_string())?;
             Ok((path.to_string(), resampled))
         }
         "mp3" => {
@@ -1019,10 +1018,7 @@ pub fn extract_embedding(net: &SimpleNeuralNet, sample: &[i16]) -> Vec<f32> {
 }
 
 /// Compute an embedding from precomputed feature windows.
-pub fn extract_embedding_from_features(
-    net: &SimpleNeuralNet,
-    windows: &[Vec<f32>],
-) -> Vec<f32> {
+pub fn extract_embedding_from_features(net: &SimpleNeuralNet, windows: &[Vec<f32>]) -> Vec<f32> {
     let mut wins = Vec::new();
     for win in windows {
         wins.push(net.embed(win));
@@ -1069,9 +1065,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// where `mean` is the average embedding, `mean_sim` is the mean cosine
 /// similarity of each training embedding to the mean, and `std_sim` is the
 /// standard deviation of those similarities.
-pub fn compute_speaker_embeddings(
-    net: &SimpleNeuralNet,
-) -> Option<Vec<(Vec<f32>, f32, f32)>> {
+pub fn compute_speaker_embeddings(net: &SimpleNeuralNet) -> Option<Vec<(Vec<f32>, f32, f32)>> {
     let mut speaker_embeds = Vec::with_capacity(net.output_size());
     for files in net.file_lists.iter().take(net.output_size()) {
         let mut embeds = Vec::new();
