@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, RwLock,
 };
 use streamz_rs::{
 
@@ -275,14 +275,14 @@ fn main() {
             .iter()
             .map(|(p, c)| (p.as_str(), *c))
             .collect();
-        let net_arc = Arc::new(Mutex::new(SimpleNeuralNet::new(
+        let net_arc = Arc::new(RwLock::new(SimpleNeuralNet::new(
             FEATURE_SIZE,
             512,
             256,
             count_speakers(&train_files).max(1),
         )));
         if !train_refs.is_empty() {
-            let out_sz = net_arc.lock().unwrap().output_size();
+            let out_sz = net_arc.read().unwrap().output_size();
             let _ = train_from_files(
                 net_arc.clone(),
                 &train_refs,
@@ -377,7 +377,7 @@ fn main() {
             num_speakers = 1;
             train_files[0].1 = Some(0);
         }
-        let net_arc = Arc::new(Mutex::new(SimpleNeuralNet::new(
+        let net_arc = Arc::new(RwLock::new(SimpleNeuralNet::new(
             FEATURE_SIZE,
             512,
             256,
@@ -388,7 +388,7 @@ fn main() {
             .filter_map(|(p, c)| c.map(|cls| (p.as_str(), cls)))
             .collect();
         if !train_refs.is_empty() {
-            let out_sz = net_arc.lock().unwrap().output_size();
+            let out_sz = net_arc.read().unwrap().output_size();
             if let Err(e) = train_from_files(
                 net_arc.clone(),
                 &train_refs,
@@ -416,13 +416,13 @@ fn main() {
             .unwrap(),
     );
 
-    let net_arc = Arc::new(Mutex::new(net));
+    let net_arc = Arc::new(RwLock::new(net));
     let feats_arc = Arc::new(feature_map);
     let pb_arc = Arc::new(pb);
     let total_loss = Arc::new(Mutex::new(0.0f32));
     let loss_count = Arc::new(AtomicUsize::new(0));
     let embeddings = Arc::new(Mutex::new({
-        let guard = net_arc.lock().unwrap();
+        let guard = net_arc.read().unwrap();
         compute_speaker_embeddings(&guard, &extractor).unwrap_or_default()
     }));
     let update_embeddings = Arc::new(AtomicBool::new(true));
@@ -432,13 +432,13 @@ fn main() {
         pb_arc.set_message(path.to_string());
 
         if let Some(windows) = feats_arc.get(path) {
-            let mut net = net_arc.lock().unwrap();
             let mut embeds = embeddings.lock().unwrap();
             let count = loss_count.load(Ordering::SeqCst);
             let dynamic_threshold = if count < 50 { 0.95 } else { conf_threshold };
 
             if let Some(label) = *class {
                 // Known speaker: supervised training
+                let mut net = net_arc.write().unwrap();
                 let sz = net.output_size();
                 let loss = pretrain_from_features(
                     &mut net,
@@ -457,14 +457,18 @@ fn main() {
             } else {
                 // Unlabelled: try to match known speaker
                 if update_embeddings.load(Ordering::SeqCst) || embeds.is_empty() {
-                    *embeds = compute_speaker_embeddings(&net, extractor).unwrap_or_default();
+                    let net_read = net_arc.read().unwrap();
+                    *embeds = compute_speaker_embeddings(&net_read, extractor).unwrap_or_default();
                     update_embeddings.store(false, Ordering::SeqCst);
                 }
 
+                let net_read = net_arc.read().unwrap();
                 if let Some(pred) =
-                    identify_speaker_cosine_feats(&net, &embeds, windows, dynamic_threshold)
+                    identify_speaker_cosine_feats(&net_read, &embeds, windows, dynamic_threshold)
                 {
+                    drop(net_read);
                     *class = Some(pred);
+                    let mut net = net_arc.write().unwrap();
                     let sz = net.output_size();
                     let loss = pretrain_from_features(
                         &mut net,
@@ -481,7 +485,9 @@ fn main() {
                     net.record_training_file(pred, path);
                     update_embeddings.store(true, Ordering::SeqCst);
                 } else {
+                    drop(net_read);
                     // New speaker: expand class
+                    let mut net = net_arc.write().unwrap();
                     net.add_output_class();
                     let new_label = net.output_size() - 1;
                     *class = Some(new_label);
