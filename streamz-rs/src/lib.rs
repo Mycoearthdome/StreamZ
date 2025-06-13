@@ -20,24 +20,29 @@ use std::fs::File;
 const DEFAULT_SAMPLE_RATE: u32 = 44100;
 pub const WINDOW_SIZE: usize = 1024;
 const N_MELS: usize = 26;
-pub const MFCC_SIZE: usize = 13;
+pub const MFCC_SIZE: usize = 20;
 pub const FEATURE_SIZE: usize = MFCC_SIZE * 3;
 /// Default dropout probability applied during training.
 pub const DEFAULT_DROPOUT: f32 = 0.2;
 
-/// Apply simple data augmentation to raw i16 samples.
-/// Adds small random gain and noise to each sample.
+/// Apply data augmentation to raw i16 samples.
+///
+/// In addition to random gain and noise, a small random time shift is
+/// applied to each recording. This helps the network become more
+/// robust to differences in leading/trailing silence.
 pub fn augment(samples: &[i16]) -> Vec<i16> {
     let mut rng = rand::thread_rng();
-    samples
-        .iter()
-        .map(|&s| {
-            let noise: f32 = rng.gen_range(-0.001..0.001);
-            let gain: f32 = rng.gen_range(0.98..1.02);
-            (s as f32 * gain + noise * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32)
-                as i16
-        })
-        .collect()
+    let noise_level: f32 = rng.gen_range(0.0..0.005);
+    let gain: f32 = rng.gen_range(0.95..1.05);
+    let shift = rng.gen_range(0..samples.len().min(WINDOW_SIZE));
+    let mut out = Vec::with_capacity(samples.len());
+    for i in 0..samples.len() {
+        let idx = (i + shift) % samples.len();
+        let noise: f32 = rng.gen_range(-noise_level..noise_level);
+        let val = samples[idx] as f32 * gain + noise * i16::MAX as f32;
+        out.push(val.clamp(i16::MIN as f32, i16::MAX as f32) as i16);
+    }
+    out
 }
 
 /// Apply dropout to a slice of features in-place.
