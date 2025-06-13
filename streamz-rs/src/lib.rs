@@ -19,6 +19,7 @@ use std::error::Error;
 use std::fs::File;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicI32, Ordering};
 use once_cell::sync::Lazy;
 
 pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
@@ -504,7 +505,7 @@ pub fn pretrain_from_features(
 
 /// Train the network using a list of `(path, class)` tuples containing WAV files.
 pub fn train_from_files(
-    net: &mut SimpleNeuralNet,
+    net: Arc<Mutex<SimpleNeuralNet>>,
     files: &[(&str, usize)],
     total_files: usize,
     num_speakers: usize,
@@ -514,6 +515,7 @@ pub fn train_from_files(
     batch_size: usize,
 ) -> Result<(), Box<dyn Error>> {
     use indicatif::{ProgressBar, ProgressStyle};
+    use rayon::prelude::*;
     println!("Training on {} files individually", total_files);
     let pb = ProgressBar::new(files.len() as u64);
     pb.set_style(
@@ -522,27 +524,37 @@ pub fn train_from_files(
             .unwrap(),
     );
 
-    let mut step = 0i32;
-    for &(path, class) in files {
-        pb.set_message(path.to_string());
+    let step = AtomicI32::new(0);
+
+    files.par_iter().for_each(|&(path, class)| {
+        pb.println(path);
         let (sample_rate, bits) = match audio_metadata(path) {
             Ok(meta) => meta,
             Err(e) => {
                 eprintln!("Skipping {}: {}", path, e);
-                continue;
+                pb.inc(1);
+                return;
             }
         };
-        net.set_dataset_specs(sample_rate, bits);
+
+        {
+            let mut guard = net.lock().unwrap();
+            guard.set_dataset_specs(sample_rate, bits);
+        }
+
         if bits != 16 {
             eprintln!("Skipping {}: Only 16-bit audio supported", path);
-            continue;
+            pb.inc(1);
+            return;
         }
+
         for _ in 0..epochs {
             match load_audio_samples(path) {
                 Ok(samples) => {
-                    let lr_scaled = lr * (0.99f32).powi(step);
+                    let lr_scaled = lr * (0.99f32).powi(step.fetch_add(1, Ordering::SeqCst));
+                    let mut guard = net.lock().unwrap();
                     let _ = pretrain_network(
-                        net,
+                        &mut *guard,
                         &samples,
                         class,
                         num_speakers,
@@ -551,8 +563,7 @@ pub fn train_from_files(
                         dropout,
                         batch_size,
                     );
-                    net.record_training_file(class, path);
-                    step += 1;
+                    guard.record_training_file(class, path);
                 }
                 Err(e) => {
                     eprintln!("Skipping {}: {}", path, e);
@@ -560,8 +571,10 @@ pub fn train_from_files(
                 }
             }
         }
+
         pb.inc(1);
-    }
+    });
+
     pb.finish_and_clear();
     Ok(())
 }
