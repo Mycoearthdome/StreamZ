@@ -135,23 +135,57 @@ fn main() {
         }
         let embeds = compute_speaker_embeddings(&net).unwrap_or_default();
         let total = eval_set.len();
-        let correct = eval_set
-            .par_iter()
-            .filter(|(path, class)| match load_audio_samples(path) {
-                Ok(samples) => identify_speaker_cosine(&net, &embeds, &samples, conf_threshold)
-                    .map(|pred| pred == *class)
-                    .unwrap_or(false),
-                Err(e) => {
-                    eprintln!("Skipping {}: {}", path, e);
-                    false
+        let mut correct = 0usize;
+        let mut tp = 0usize;
+        let mut fp = 0usize;
+        let mut fnc = 0usize;
+        for (path, class) in &eval_set {
+            match load_audio_samples(path) {
+                Ok(samples) => {
+                    match identify_speaker_cosine(&net, &embeds, &samples, conf_threshold) {
+                        Some(pred) => {
+                            if pred == *class {
+                                tp += 1;
+                                correct += 1;
+                            } else {
+                                fp += 1;
+                                fnc += 1;
+                            }
+                        }
+                        None => {
+                            fnc += 1;
+                        }
+                    }
                 }
-            })
-            .count();
+                Err(e) => eprintln!("Skipping {}: {}", path, e),
+            }
+        }
+        let precision = if tp + fp > 0 {
+            tp as f32 / (tp + fp) as f32
+        } else {
+            0.0
+        };
+        let recall = if tp + fnc > 0 {
+            tp as f32 / (tp + fnc) as f32
+        } else {
+            0.0
+        };
+        let f1 = if precision + recall > 0.0 {
+            2.0 * precision * recall / (precision + recall)
+        } else {
+            0.0
+        };
         println!(
             "Eval accuracy: {}/{} ({:.2}%)",
             correct,
             total,
             correct as f32 * 100.0 / total as f32
+        );
+        println!(
+            "Precision: {:.2}% Recall: {:.2}% F1: {:.2}%",
+            precision * 100.0,
+            recall * 100.0,
+            f1 * 100.0
         );
         return;
     }
@@ -213,13 +247,15 @@ fn main() {
 
     let mut speaker_embeds = compute_speaker_embeddings(&net).unwrap_or_default();
 
+    let mut total_loss = 0.0f32;
+    let mut loss_count = 0usize;
     for ((path, class), result) in train_files.iter_mut().zip(preload) {
         pb.set_message(path.to_string());
         match result {
             Ok((_, _, samples)) => {
                 if let Some(label) = *class {
                     let sz = net.output_size();
-                    pretrain_network(
+                    let loss = pretrain_network(
                         &mut net,
                         &samples,
                         label,
@@ -228,13 +264,15 @@ fn main() {
                         0.01,
                         DROPOUT_PROB,
                     );
+                    total_loss += loss;
+                    loss_count += 1;
                     net.record_training_file(label, path);
                 } else if let Some(pred) =
                     identify_speaker_cosine(&net, &speaker_embeds, &samples, conf_threshold)
                 {
                     *class = Some(pred);
                     let sz = net.output_size();
-                    pretrain_network(
+                    let loss = pretrain_network(
                         &mut net,
                         &samples,
                         pred,
@@ -243,13 +281,15 @@ fn main() {
                         0.01,
                         DROPOUT_PROB,
                     );
+                    total_loss += loss;
+                    loss_count += 1;
                     net.record_training_file(pred, path);
                 } else {
                     net.add_output_class();
                     let new_label = net.output_size() - 1;
                     *class = Some(new_label);
                     let sz = net.output_size();
-                    pretrain_network(
+                    let loss = pretrain_network(
                         &mut net,
                         &samples,
                         new_label,
@@ -258,6 +298,8 @@ fn main() {
                         0.01,
                         DROPOUT_PROB,
                     );
+                    total_loss += loss;
+                    loss_count += 1;
                     net.record_training_file(new_label, path);
                 }
                 speaker_embeds = compute_speaker_embeddings(&net).unwrap_or_default();
@@ -271,6 +313,9 @@ fn main() {
     }
 
     pb.finish_and_clear();
+    if loss_count > 0 {
+        println!("Average training loss: {:.4}", total_loss / loss_count as f32);
+    }
 
     if let Err(e) = net.save(MODEL_PATH) {
         eprintln!("Failed to save model: {}", e);
