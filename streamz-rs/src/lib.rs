@@ -258,8 +258,8 @@ pub fn load_wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
     resample_to_44100(&samples, sample_rate)
 }
 
-/// Load samples from an MP3 file using the `minimp3` decoder. Returns the
-/// decoded samples along with the detected sample rate.
+/// Load samples from an MP3 file using the `minimp3` decoder.
+/// Returns downmixed mono samples along with the detected sample rate.
 pub fn load_mp3_samples(path: &str) -> Result<(Vec<i16>, u32, usize), Box<dyn Error>> {
     let file = File::open(path)?;
     let mut decoder = Decoder::new(BufReader::new(file));
@@ -278,7 +278,17 @@ pub fn load_mp3_samples(path: &str) -> Result<(Vec<i16>, u32, usize), Box<dyn Er
                     sample_rate = sr as u32;
                     channels = ch as usize;
                 }
-                samples.extend_from_slice(&data);
+                for chunk in data.chunks(2) {
+                    let left = chunk[0] as i32;
+                    let right = if chunk.len() > 1 {
+                        chunk[1] as i32
+                    } else {
+                        left
+                    };
+                    let mono = ((left + right) / 2)
+                        .clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                    samples.push(mono);
+                }
             }
             Err(Mp3Error::Eof) => break,
             Err(e) => return Err(Box::new(e)),
@@ -287,7 +297,7 @@ pub fn load_mp3_samples(path: &str) -> Result<(Vec<i16>, u32, usize), Box<dyn Er
     if sample_rate == 0 {
         return Err("No frames decoded".into());
     }
-    Ok((samples, sample_rate, channels))
+    Ok((samples, sample_rate, 1))
 }
 
 /// Load audio samples from either a WAV or MP3 file depending on the file
@@ -306,9 +316,8 @@ pub fn load_audio_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
             return load_wav_samples(cached_path.to_str().unwrap());
         }
 
-        let (samples, sr, ch) = load_mp3_samples(path)?;
-        let mono = downmix_to_mono(&samples, ch);
-        let resampled = resample_to_44100(&mono, sr)?;
+        let (samples, sr, _) = load_mp3_samples(path)?;
+        let resampled = resample_to_44100(&samples, sr)?;
 
         // Save WAV to cache
         let mut writer = hound::WavWriter::create(
