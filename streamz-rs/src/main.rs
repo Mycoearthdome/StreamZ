@@ -19,6 +19,8 @@ const DEFAULT_CONF_THRESHOLD: f32 = 0.8;
 const TRAIN_EPOCHS: usize = 15;
 /// Dropout probability used during training.
 const DROPOUT_PROB: f32 = streamz_rs::DEFAULT_DROPOUT;
+/// Number of feature windows per training batch.
+const BATCH_SIZE: usize = 8;
 
 fn load_train_files(path: &str) -> Vec<(String, Option<usize>)> {
     if let Ok(content) = fs::read_to_string(path) {
@@ -75,6 +77,7 @@ fn count_speakers(files: &[(String, Option<usize>)]) -> usize {
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut conf_threshold = DEFAULT_CONF_THRESHOLD;
+    let mut eval_split = 0.2f32;
     let eval_mode = args.iter().any(|a| a == "--eval");
     if let Some(idx) = args.iter().position(|a| a == "--threshold") {
         if let Some(val) = args.get(idx + 1) {
@@ -90,6 +93,19 @@ fn main() {
                 "Missing value for --threshold, using default {}",
                 DEFAULT_CONF_THRESHOLD
             );
+        }
+    }
+    if let Some(idx) = args.iter().position(|a| a == "--eval-split") {
+        if let Some(val) = args.get(idx + 1) {
+            match val.parse::<f32>() {
+                Ok(v) => eval_split = v.clamp(0.0, 1.0),
+                Err(_) => eprintln!(
+                    "Invalid value for --eval-split '{}', using default 0.2",
+                    val
+                ),
+            }
+        } else {
+            eprintln!("Missing value for --eval-split, using default 0.2");
         }
     }
 
@@ -110,11 +126,28 @@ fn main() {
             eprintln!("No labelled data available for evaluation");
             return;
         }
-        labelled.shuffle(&mut rng);
-        let split = (labelled.len() as f32 * 0.2).ceil() as usize;
-        let mut eval_set = labelled.split_off(labelled.len().saturating_sub(split));
+        use std::collections::HashMap;
+        let mut by_class: HashMap<usize, Vec<String>> = HashMap::new();
+        for (path, cls) in labelled {
+            by_class.entry(cls).or_default().push(path);
+        }
+        let mut eval_set: Vec<(String, usize)> = Vec::new();
+        let mut train_refs_owned: Vec<(String, usize)> = Vec::new();
+        for (cls, mut paths) in by_class {
+            paths.shuffle(&mut rng);
+            let split_count = (paths.len() as f32 * eval_split).ceil() as usize;
+            let eval_part: Vec<(String, usize)> = paths
+                .split_off(paths.len().saturating_sub(split_count))
+                .into_iter()
+                .map(|p| (p, cls))
+                .collect();
+            let train_part: Vec<(String, usize)> =
+                paths.into_iter().map(|p| (p, cls)).collect();
+            eval_set.extend(eval_part);
+            train_refs_owned.extend(train_part);
+        }
         let train_refs: Vec<(&str, usize)> =
-            labelled.iter().map(|(p, c)| (p.as_str(), *c)).collect();
+            train_refs_owned.iter().map(|(p, c)| (p.as_str(), *c)).collect();
         let mut net = SimpleNeuralNet::new(
             FEATURE_SIZE,
             256,
@@ -131,6 +164,7 @@ fn main() {
                 TRAIN_EPOCHS,
                 0.01,
                 DROPOUT_PROB,
+                BATCH_SIZE,
             );
         }
         let embeds = compute_speaker_embeddings(&net).unwrap_or_default();
@@ -222,6 +256,7 @@ fn main() {
                 TRAIN_EPOCHS,
                 0.01,
                 DROPOUT_PROB,
+                BATCH_SIZE,
             ) {
                 eprintln!("Training failed: {}", e);
             }
@@ -263,6 +298,7 @@ fn main() {
                         TRAIN_EPOCHS,
                         0.01,
                         DROPOUT_PROB,
+                        BATCH_SIZE,
                     );
                     total_loss += loss;
                     loss_count += 1;
@@ -280,6 +316,7 @@ fn main() {
                         TRAIN_EPOCHS,
                         0.01,
                         DROPOUT_PROB,
+                        BATCH_SIZE,
                     );
                     total_loss += loss;
                     loss_count += 1;
@@ -297,6 +334,7 @@ fn main() {
                         TRAIN_EPOCHS,
                         0.01,
                         DROPOUT_PROB,
+                        BATCH_SIZE,
                     );
                     total_loss += loss;
                     loss_count += 1;
