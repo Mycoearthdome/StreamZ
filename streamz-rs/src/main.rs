@@ -11,10 +11,10 @@ use std::sync::{
     Arc, Mutex,
 };
 use streamz_rs::{
-    batch_resample, compute_speaker_embeddings, identify_speaker_cosine,
-    identify_speaker_with_threshold, load_and_resample_file, load_audio_samples, pretrain_network,
-    set_wav_cache_enabled, train_from_files, wav_cache_enabled, FeatureExtractor, SimpleNeuralNet,
-    DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
+    batch_resample, compute_speaker_embeddings, identify_speaker_cosine_feats,
+    identify_speaker_with_threshold, load_and_resample_file, load_audio_samples,
+    pretrain_from_features, set_wav_cache_enabled, train_from_files, wav_cache_enabled,
+    FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
 };
 
 const MODEL_PATH: &str = "model.npz";
@@ -226,7 +226,13 @@ fn main() {
     // Decode and resample all files in parallel once
     let path_list: Vec<String> = train_files.iter().map(|(p, _)| p.clone()).collect();
     let resampled_audio = batch_resample(&path_list);
-    let mut audio_map: HashMap<String, Vec<i16>> = resampled_audio.into_iter().collect();
+    let feature_map: HashMap<String, Vec<Vec<f32>>> = resampled_audio
+        .into_par_iter()
+        .map(|(path, samples)| {
+            let feats = extractor.extract(&samples);
+            (path, feats)
+        })
+        .collect();
 
     let dataset_size = train_files.len();
     let burn_in_default = ((dataset_size as f32) * DEFAULT_BURN_IN_FRAC).ceil() as usize;
@@ -409,7 +415,7 @@ fn main() {
     );
 
     let net_arc = Arc::new(Mutex::new(net));
-    let audio_arc = Arc::new(audio_map);
+    let feats_arc = Arc::new(feature_map);
     let pb_arc = Arc::new(pb);
     let total_loss = Arc::new(Mutex::new(0.0f32));
     let loss_count = Arc::new(AtomicUsize::new(0));
@@ -422,7 +428,7 @@ fn main() {
     train_files.par_iter_mut().for_each(|(path, class)| {
         pb_arc.set_message(path.to_string());
 
-        if let Some(samples) = audio_arc.get(path) {
+        if let Some(windows) = feats_arc.get(path) {
             let mut net = net_arc.lock().unwrap();
             let mut embeds = embeddings.lock().unwrap();
             let count = loss_count.load(Ordering::SeqCst);
@@ -431,16 +437,15 @@ fn main() {
             if let Some(label) = *class {
                 // Known speaker: supervised training
                 let sz = net.output_size();
-                let loss = pretrain_network(
+                let loss = pretrain_from_features(
                     &mut net,
-                    samples,
+                    windows,
                     label,
                     sz,
                     5, // Reduced TRAIN_EPOCHS for speed
                     0.01,
                     DROPOUT_PROB,
                     BATCH_SIZE,
-                    &extractor,
                 );
                 *total_loss.lock().unwrap() += loss;
                 loss_count.fetch_add(1, Ordering::SeqCst);
@@ -454,20 +459,19 @@ fn main() {
                 }
 
                 if let Some(pred) =
-                    identify_speaker_cosine(&net, &embeds, samples, dynamic_threshold, &extractor)
+                    identify_speaker_cosine_feats(&net, &embeds, windows, dynamic_threshold)
                 {
                     *class = Some(pred);
                     let sz = net.output_size();
-                    let loss = pretrain_network(
+                    let loss = pretrain_from_features(
                         &mut net,
-                        samples,
+                        windows,
                         pred,
                         sz,
                         5,
                         0.01,
                         DROPOUT_PROB,
                         BATCH_SIZE,
-                        &extractor,
                     );
                     *total_loss.lock().unwrap() += loss;
                     loss_count.fetch_add(1, Ordering::SeqCst);
@@ -479,16 +483,15 @@ fn main() {
                     let new_label = net.output_size() - 1;
                     *class = Some(new_label);
                     let sz = net.output_size();
-                    let loss = pretrain_network(
+                    let loss = pretrain_from_features(
                         &mut net,
-                        samples,
+                        windows,
                         new_label,
                         sz,
                         5,
                         0.01,
                         DROPOUT_PROB,
                         BATCH_SIZE,
-                        &extractor,
                     );
                     *total_loss.lock().unwrap() += loss;
                     loss_count.fetch_add(1, Ordering::SeqCst);
