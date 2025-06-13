@@ -16,6 +16,7 @@ use std::io::BufReader;
 use rubato::{FftFixedInOut, Resampler};
 use std::error::Error;
 use std::fs::File;
+use std::path::Path;
 
 const DEFAULT_SAMPLE_RATE: u32 = 44100;
 pub const WINDOW_SIZE: usize = 800;
@@ -276,8 +277,37 @@ pub fn load_mp3_samples(path: &str) -> Result<(Vec<i16>, u32), Box<dyn Error>> {
 /// extension.
 pub fn load_audio_samples(path: &str) -> Result<Vec<i16>, Box<dyn Error>> {
     if path.to_ascii_lowercase().ends_with(".mp3") {
+        let cache_dir = Path::new("cache");
+        std::fs::create_dir_all(cache_dir)?;
+        let file_stem = Path::new(path)
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy();
+        let cached_path = cache_dir.join(format!("{file_stem}.wav"));
+
+        if cached_path.exists() {
+            return load_wav_samples(cached_path.to_str().unwrap());
+        }
+
         let (samples, sr) = load_mp3_samples(path)?;
-        resample_to_44100(&samples, sr)
+        let resampled = resample_to_44100(&samples, sr)?;
+
+        // Save WAV to cache
+        let mut writer = hound::WavWriter::create(
+            &cached_path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: DEFAULT_SAMPLE_RATE,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )?;
+        for sample in &resampled {
+            writer.write_sample(*sample)?;
+        }
+        writer.finalize()?;
+
+        Ok(resampled)
     } else {
         load_wav_samples(path)
     }
