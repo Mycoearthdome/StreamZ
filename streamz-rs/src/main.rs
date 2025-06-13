@@ -8,7 +8,7 @@ use streamz_rs::{
     compute_speaker_embeddings, identify_speaker_cosine, identify_speaker_with_threshold,
     load_and_resample_file, load_audio_samples, pretrain_network, train_from_files,
     batch_resample, set_wav_cache_enabled, wav_cache_enabled, SimpleNeuralNet,
-    DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
+    FeatureExtractor, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
 };
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -152,6 +152,7 @@ fn main() {
     let eval_mode = args.iter().any(|a| a == "--eval");
     let no_cache_wav = args.iter().any(|a| a == "--no-cache-wav");
     set_wav_cache_enabled(!no_cache_wav);
+    let extractor = FeatureExtractor::new();
     if let Some(idx) = args.iter().position(|a| a == "--threshold") {
         if let Some(val) = args.get(idx + 1) {
             match val.parse::<f32>() {
@@ -280,6 +281,7 @@ fn main() {
                 0.01,
                 DROPOUT_PROB,
                 BATCH_SIZE,
+                &extractor,
             );
         }
         let mut net = match Arc::try_unwrap(net_arc) {
@@ -294,7 +296,7 @@ fn main() {
         for (path, class) in &eval_set {
             match load_audio_samples(path) {
                 Ok(samples) => {
-                    match identify_speaker_with_threshold(&net, &samples, conf_threshold) {
+                    match identify_speaker_with_threshold(&net, &samples, conf_threshold, &extractor) {
                         Some(pred) => {
                             if pred == *class {
                                 tp += 1;
@@ -380,6 +382,7 @@ fn main() {
                 0.01,
                 DROPOUT_PROB,
                 BATCH_SIZE,
+                &extractor,
             ) {
                 eprintln!("Training failed: {}", e);
             }
@@ -404,7 +407,7 @@ fn main() {
     let loss_count = Arc::new(AtomicUsize::new(0));
     let embeddings = Arc::new(Mutex::new({
         let guard = net_arc.lock().unwrap();
-        compute_speaker_embeddings(&guard).unwrap_or_default()
+        compute_speaker_embeddings(&guard, &extractor).unwrap_or_default()
     }));
     let update_embeddings = Arc::new(AtomicBool::new(true));
 
@@ -425,6 +428,7 @@ fn main() {
                 // Known speaker: supervised training
                 let sz = net.output_size();
                 let loss = pretrain_network(
+                    &extractor,
                     &mut net,
                     samples,
                     label,
@@ -441,16 +445,17 @@ fn main() {
             } else {
                 // Unlabelled: try to match known speaker
                 if update_embeddings.load(Ordering::SeqCst) || embeds.is_empty() {
-                    *embeds = compute_speaker_embeddings(&net).unwrap_or_default();
+                    *embeds = compute_speaker_embeddings(&net, &extractor).unwrap_or_default();
                     update_embeddings.store(false, Ordering::SeqCst);
                 }
 
                 if let Some(pred) =
-                    identify_speaker_cosine(&net, &embeds, samples, dynamic_threshold)
+                    identify_speaker_cosine(&net, &embeds, samples, dynamic_threshold, &extractor)
                 {
                     *class = Some(pred);
                     let sz = net.output_size();
                     let loss = pretrain_network(
+                        &extractor,
                         &mut net,
                         samples,
                         pred,
@@ -471,6 +476,7 @@ fn main() {
                     *class = Some(new_label);
                     let sz = net.output_size();
                     let loss = pretrain_network(
+                        &extractor,
                         &mut net,
                         samples,
                         new_label,
@@ -492,7 +498,7 @@ fn main() {
                 if let Err(e) = net.save(MODEL_PATH) {
                     eprintln!("Failed to save model: {}", e);
                 }
-                *embeds = compute_speaker_embeddings(&net).unwrap_or_default();
+                *embeds = compute_speaker_embeddings(&net, &extractor).unwrap_or_default();
             }
         } else {
             eprintln!("Missing audio for {}", path);
