@@ -451,9 +451,10 @@ fn main() {
                     BATCH_SIZE,
                 );
                 *total_loss.lock().unwrap() += loss;
-                loss_count.fetch_add(1, Ordering::SeqCst);
+                if loss_count.fetch_add(1, Ordering::SeqCst) % 100 == 0 {
+                    update_embeddings.store(true, Ordering::SeqCst);
+                }
                 net.record_training_file(label, path);
-                update_embeddings.store(true, Ordering::SeqCst);
             } else {
                 // Unlabelled: try to match known speaker
                 if update_embeddings.load(Ordering::SeqCst) || embeds.is_empty() {
@@ -477,9 +478,10 @@ fn main() {
                         BATCH_SIZE,
                     );
                     *total_loss.lock().unwrap() += loss;
-                    loss_count.fetch_add(1, Ordering::SeqCst);
+                    if loss_count.fetch_add(1, Ordering::SeqCst) % 100 == 0 {
+                        update_embeddings.store(true, Ordering::SeqCst);
+                    }
                     net.record_training_file(pred, path);
-                    update_embeddings.store(true, Ordering::SeqCst);
                 } else {
                     // New speaker: expand class
                     net.add_output_class();
@@ -497,9 +499,10 @@ fn main() {
                         BATCH_SIZE,
                     );
                     *total_loss.lock().unwrap() += loss;
-                    loss_count.fetch_add(1, Ordering::SeqCst);
+                    if loss_count.fetch_add(1, Ordering::SeqCst) % 100 == 0 {
+                        update_embeddings.store(true, Ordering::SeqCst);
+                    }
                     net.record_training_file(new_label, path);
-                    update_embeddings.store(true, Ordering::SeqCst);
                 }
             }
         } else {
