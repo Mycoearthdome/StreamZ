@@ -12,6 +12,7 @@ StreamZ is a small Rust application that trains and executes a simple neural net
 - Works with recordings that use different sample rates and can grow to
   handle any number of speakers over time.
 - Automatically resamples all audio to 44.1kHz for consistent processing.
+- Caches MP3 files as WAV before feature extraction when caching is enabled.
 - A helper function `identify_speaker_list` returns all detected speakers in
   a recording based on per-window predictions.
 - Optionally caches MFCC + delta feature windows for each audio file as `.npy` in
