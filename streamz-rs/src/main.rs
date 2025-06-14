@@ -454,7 +454,10 @@ fn main() {
                 pb_arc.inc(1);
                 return;
             }
-            let mut embeds = embeddings.lock().unwrap();
+            let mut embeds = {
+                // clone current embeddings while holding the lock briefly
+                embeddings.lock().unwrap().clone()
+            };
             let count = loss_count.load(Ordering::SeqCst);
             let burn_phase = count < burn_in_limit_val;
             let dynamic_threshold = if burn_phase { 0.5 } else { conf_threshold };
@@ -495,19 +498,25 @@ fn main() {
                 *total_loss.lock().unwrap() += loss;
                 let new_count = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
                 if new_count % 100 == 0 {
-                    let net_read = net_arc.read().unwrap();
-                    *embeds =
-                        compute_speaker_embeddings(&net_read, extractor).unwrap_or_default();
+                    let mut new_embeds = {
+                        let net_read = net_arc.read().unwrap();
+                        compute_speaker_embeddings(&net_read, extractor).unwrap_or_default()
+                    };
                     let feats = speaker_features.lock().unwrap();
                     let mut map = speaker_embeddings.write().unwrap();
                     for (id, fs) in feats.iter() {
                         let mean_feat = average_vectors(fs);
                         map.insert(*id, mean_feat);
                     }
-                    *embeds = map
+                    new_embeds = map
                         .iter()
                         .map(|(_, v)| (v.clone(), 0.0, 0.0))
                         .collect();
+                    {
+                        let mut guard = embeddings.lock().unwrap();
+                        *guard = new_embeds.clone();
+                    }
+                    embeds = new_embeds;
                 }
                 net.record_training_file(label, path);
                 let emb = {
@@ -523,9 +532,16 @@ fn main() {
             } else {
                 // Unlabelled: try to match known speaker
                 if update_embeddings.load(Ordering::SeqCst) || embeds.is_empty() {
-                    let net_read = net_arc.read().unwrap();
-                    *embeds = compute_speaker_embeddings(&net_read, extractor).unwrap_or_default();
+                    let mut new_embeds = {
+                        let net_read = net_arc.read().unwrap();
+                        compute_speaker_embeddings(&net_read, extractor).unwrap_or_default()
+                    };
+                    {
+                        let mut guard = embeddings.lock().unwrap();
+                        *guard = new_embeds.clone();
+                    }
                     update_embeddings.store(false, Ordering::SeqCst);
+                    embeds = new_embeds;
                 }
 
                 eprintln!("Embedding count: {}", embeds.len());
@@ -552,19 +568,25 @@ fn main() {
                     *total_loss.lock().unwrap() += loss;
                     let new_count = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
                     if new_count % 100 == 0 {
-                        let net_read = net_arc.read().unwrap();
-                        *embeds =
-                            compute_speaker_embeddings(&net_read, extractor).unwrap_or_default();
+                        let mut new_embeds = {
+                            let net_read = net_arc.read().unwrap();
+                            compute_speaker_embeddings(&net_read, extractor).unwrap_or_default()
+                        };
                         let feats = speaker_features.lock().unwrap();
                         let mut map = speaker_embeddings.write().unwrap();
                         for (id, fs) in feats.iter() {
                             let mean_feat = average_vectors(fs);
                             map.insert(*id, mean_feat);
                         }
-                        *embeds = map
+                        new_embeds = map
                             .iter()
                             .map(|(_, v)| (v.clone(), 0.0, 0.0))
                             .collect();
+                        {
+                            let mut guard = embeddings.lock().unwrap();
+                            *guard = new_embeds.clone();
+                        }
+                        embeds = new_embeds;
                     }
                     net.record_training_file(pred, path);
                     let emb = {
@@ -600,19 +622,25 @@ fn main() {
                     *total_loss.lock().unwrap() += loss;
                     let new_count = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
                     if new_count % 100 == 0 {
-                        let net_read = net_arc.read().unwrap();
-                        *embeds =
-                            compute_speaker_embeddings(&net_read, extractor).unwrap_or_default();
+                        let mut new_embeds = {
+                            let net_read = net_arc.read().unwrap();
+                            compute_speaker_embeddings(&net_read, extractor).unwrap_or_default()
+                        };
                         let feats = speaker_features.lock().unwrap();
                         let mut map = speaker_embeddings.write().unwrap();
                         for (id, fs) in feats.iter() {
                             let mean_feat = average_vectors(fs);
                             map.insert(*id, mean_feat);
                         }
-                        *embeds = map
+                        new_embeds = map
                             .iter()
                             .map(|(_, v)| (v.clone(), 0.0, 0.0))
                             .collect();
+                        {
+                            let mut guard = embeddings.lock().unwrap();
+                            *guard = new_embeds.clone();
+                        }
+                        embeds = new_embeds;
                     }
                     net.record_training_file(new_label, path);
                     let emb = {
