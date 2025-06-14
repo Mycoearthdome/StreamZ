@@ -40,6 +40,14 @@ audio/bob1.mp3,1
 unlabelled.mp3
 ```
 
+If `target_files.txt` exists it should contain paths and labels for a
+separate evaluation set using the same `path,label` format. When running
+with `--eval` these files are loaded from the `cache/` directory if a
+matching WAV is found and used to compute accuracy metrics. MP3 files in
+either list are automatically converted to `cache/<name>.wav` before
+processing. If a neighbouring `.wav` file already exists it is used
+instead of creating a cached copy.
+
 Run the classifier:
 
 ```bash
@@ -54,10 +62,10 @@ During the run every file listed in `train_files.txt` is processed.  If a line l
 
 - `--burn-in-limit <n>` sets how many files are treated as the initial burn‑in phase.
 - `--max-speakers <n>` caps the number of speaker classes the model will create.
-- `--no-cache-wav` disables caching of converted WAV files.
+- `--no-cache-wav` prevents writing new cached WAV files but existing ones are reused.
 - `--threshold <value>` adjusts the confidence threshold for reusing a known label.
 - `--eval` runs the program in evaluation mode instead of updating the model.
-- `--eval-split <fraction>` controls what fraction of labelled data is reserved for evaluation when using `--eval` (default `0.2`).
+- `--eval-split <fraction>` controls what fraction of labelled data is reserved for evaluation when `target_files.txt` is not present (default `0.2`).
 - `--force` retrains the model even when a saved model exists.
 - `--retrain` behaves like `--force` and can be used without `--eval`.
 
@@ -80,10 +88,10 @@ greatly speeds up repeated training or evaluation on the same dataset.
   of the dataset (between 10 and 50 files) is used.
 - `--max-speakers <n>` prevents unbounded growth of speaker classes. The
   default limit is the current number of speakers plus ten.
-- `--no-cache-wav` disables storing converted WAV files. Caching is enabled by
-  default for faster reuse.
+- `--no-cache-wav` prevents writing new cached WAV files but existing ones are
+  reused for faster startup.
 - Use `--eval` to measure model accuracy without updating weights.
-- `--eval-split <fraction>` sets the portion of labelled data reserved for evaluation.
+- `--eval-split <fraction>` sets the portion of labelled data reserved for evaluation when `target_files.txt` is absent.
 
 ## Threaded Components
 
