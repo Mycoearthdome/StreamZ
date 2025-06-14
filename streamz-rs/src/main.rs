@@ -454,19 +454,23 @@ fn main() {
                 // Known speaker: supervised training
                 let mut net = net_arc.write().unwrap();
                 let sz = net.output_size();
+                let lr = if count < 1000 { 0.05 } else { 0.01 };
                 let loss = pretrain_from_features(
                     &mut net,
                     windows,
                     label,
                     sz,
                     5,
-                    0.01,
+                    lr,
                     DROPOUT_PROB,
                     BATCH_SIZE,
                 );
                 *total_loss.lock().unwrap() += loss;
-                if loss_count.fetch_add(1, Ordering::SeqCst) % 100 == 0 {
-                    update_embeddings.store(true, Ordering::SeqCst);
+                let new_count = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
+                if new_count % 100 == 0 {
+                    let net_read = net_arc.read().unwrap();
+                    *embeds =
+                        compute_speaker_embeddings(&net_read, extractor).unwrap_or_default();
                 }
                 net.record_training_file(label, path);
             } else {
@@ -487,19 +491,23 @@ fn main() {
                     *class = Some(pred);
                     let mut net = net_arc.write().unwrap();
                     let sz = net.output_size();
+                    let lr = if count < 1000 { 0.05 } else { 0.01 };
                     let loss = pretrain_from_features(
                         &mut net,
                         windows,
                         pred,
                         sz,
                         5,
-                        0.01,
+                        lr,
                         DROPOUT_PROB,
                         BATCH_SIZE,
                     );
                     *total_loss.lock().unwrap() += loss;
-                    if loss_count.fetch_add(1, Ordering::SeqCst) % 100 == 0 {
-                        update_embeddings.store(true, Ordering::SeqCst);
+                    let new_count = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
+                    if new_count % 100 == 0 {
+                        let net_read = net_arc.read().unwrap();
+                        *embeds =
+                            compute_speaker_embeddings(&net_read, extractor).unwrap_or_default();
                     }
                     net.record_training_file(pred, path);
                 } else {
@@ -511,19 +519,23 @@ fn main() {
                     let new_label = net.output_size() - 1;
                     *class = Some(new_label);
                     let sz = net.output_size();
+                    let lr = if count < 1000 { 0.05 } else { 0.01 };
                     let loss = pretrain_from_features(
                         &mut net,
                         windows,
                         new_label,
                         sz,
                         5,
-                        0.01,
+                        lr,
                         DROPOUT_PROB,
                         BATCH_SIZE,
                     );
                     *total_loss.lock().unwrap() += loss;
-                    if loss_count.fetch_add(1, Ordering::SeqCst) % 100 == 0 {
-                        update_embeddings.store(true, Ordering::SeqCst);
+                    let new_count = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
+                    if new_count % 100 == 0 {
+                        let net_read = net_arc.read().unwrap();
+                        *embeds =
+                            compute_speaker_embeddings(&net_read, extractor).unwrap_or_default();
                     }
                     net.record_training_file(new_label, path);
                 }

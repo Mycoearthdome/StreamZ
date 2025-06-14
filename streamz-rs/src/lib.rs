@@ -1234,7 +1234,8 @@ pub fn identify_speaker_cosine(
         if sim < (mean_sim - 2.0 * *std_sim) {
             continue;
         }
-        let dynamic_threshold = mean_sim + *std_sim * 0.5;
+        let adaptive_factor = if speaker_embeds.len() < 200 { 0.3 } else { 1.0 };
+        let dynamic_threshold = mean_sim + *std_sim * adaptive_factor;
         let accepted = sim > 0.35 && (sim > dynamic_threshold || sim > 0.5);
         eprintln!(
             "Sim to speaker {}: {:.4}, dyn_thres: {:.4}, accepted: {}",
@@ -1266,7 +1267,8 @@ pub fn identify_speaker_cosine_feats(
         if sim < (mean_sim - 2.0 * *std_sim) {
             continue;
         }
-        let dynamic_threshold = mean_sim + *std_sim * 0.5;
+        let adaptive_factor = if speaker_embeds.len() < 200 { 0.3 } else { 1.0 };
+        let dynamic_threshold = mean_sim + *std_sim * adaptive_factor;
         let accepted = sim > 0.35 && (sim > dynamic_threshold || sim > 0.5);
         eprintln!(
             "Sim to speaker {}: {:.4}, dyn_thres: {:.4}, accepted: {}",
