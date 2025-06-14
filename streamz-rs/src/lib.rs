@@ -134,30 +134,6 @@ pub fn average_features(features: &[Vec<f32>]) -> Vec<f32> {
     average_vectors(features)
 }
 
-/// Identify a speaker by comparing an embedding against known speaker
-/// embeddings. Returns the matching ID or a new ID if no similarity exceeds
-/// `threshold`.
-pub fn identify_speaker_from_embedding(
-    feat: &[f32],
-    embeddings: &HashMap<usize, Vec<f32>>,
-    threshold: f32,
-) -> usize {
-    let mut feat_norm = feat.to_vec();
-    normalize(&mut feat_norm);
-    let mut best_id = None;
-    let mut best_sim = -1.0f32;
-    for (&id, emb) in embeddings {
-        let mut emb_norm = emb.clone();
-        normalize(&mut emb_norm);
-        let sim = cosine_similarity(&feat_norm, &emb_norm);
-        if sim > threshold && sim > best_sim {
-            best_sim = sim;
-            best_id = Some(id);
-        }
-    }
-    best_id.unwrap_or_else(|| embeddings.len())
-}
-
 /// Convert a raw i16 audio sample to a normalized f32 value in [-1.0, 1.0]
 pub fn i16_to_f32(sample: i16) -> f32 {
     sample as f32 / i16::MAX as f32
