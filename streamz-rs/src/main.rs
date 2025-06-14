@@ -368,7 +368,12 @@ fn main() {
         let mut eval_set: Vec<(String, usize)>;
         let mut train_refs_owned: Vec<(String, usize)> = labelled.clone();
         if !target_files.is_empty() {
-            eval_set = target_files.clone();
+            eval_set = normalize_eval_labels(
+				&target_files
+					.iter()
+					.map(|(p, c)| (p.clone(), Some(*c)))
+					.collect::<Vec<_>>(),
+			);
         } else {
             use std::collections::HashMap;
             let mut by_class: HashMap<usize, Vec<String>> = HashMap::new();
