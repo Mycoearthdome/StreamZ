@@ -42,10 +42,20 @@ unlabelled.mp3
 Run the classifier:
 
 ```bash
-./target/release/StreamZ [--burn-in-limit <n>] [--max-speakers <n>] [--no-cache-wav]
+./target/release/StreamZ [--burn-in-limit <n>] [--max-speakers <n>] [--no-cache-wav] \
+                       [--threshold <value>] [--eval] [--eval-split <fraction>]
 ```
 
 During the run every file listed in `train_files.txt` is processed.  If a line lacks a speaker label the program will attempt to match it against previously learned voices and will append the chosen label to the file.  Newly discovered speakers are added to the model automatically.  The updated model and list of files are written back to disk at the end of the run.
+
+## Command Line Options
+
+- `--burn-in-limit <n>` sets how many files are treated as the initial burn‑in phase.
+- `--max-speakers <n>` caps the number of speaker classes the model will create.
+- `--no-cache-wav` disables caching of converted WAV files.
+- `--threshold <value>` adjusts the confidence threshold for reusing a known label.
+- `--eval` runs the program in evaluation mode instead of updating the model.
+- `--eval-split <fraction>` controls what fraction of labelled data is reserved for evaluation when using `--eval` (default `0.2`).
 
 ## Feature Caching
 
@@ -68,6 +78,8 @@ greatly speeds up repeated training or evaluation on the same dataset.
   default limit is the current number of speakers plus ten.
 - `--no-cache-wav` disables storing converted WAV files. Caching is enabled by
   default for faster reuse.
+- Use `--eval` to measure model accuracy without updating weights.
+- `--eval-split <fraction>` sets the portion of labelled data reserved for evaluation.
 
 ## Threaded Components
 
