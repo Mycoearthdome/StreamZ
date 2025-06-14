@@ -17,6 +17,7 @@ use streamz_rs::{
     identify_speaker_with_threshold, load_and_resample_file, load_audio_samples,
     pretrain_from_features, set_wav_cache_enabled, train_from_files, wav_cache_enabled,
     FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE, with_thread_extractor,
+    identify_speaker_from_embedding,
 
 };
 

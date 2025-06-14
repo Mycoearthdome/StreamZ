@@ -1207,6 +1207,27 @@ pub fn extract_embedding_from_features(net: &SimpleNeuralNet, windows: &[Vec<f32
     emb
 }
 
+/// Identify the speaker whose centroid is closest (cosine) to the given embedding.
+/// Returns either the matched speaker ID, or a new ID (usize::MAX) if no match passes threshold.
+pub fn identify_speaker_from_embedding(
+    emb: &[f32],
+    speaker_embeddings: &HashMap<usize, Vec<f32>>,
+    threshold: f32,
+) -> usize {
+    let mut best_sim = f32::MIN;
+    let mut best_id = usize::MAX;
+
+    for (&id, centroid) in speaker_embeddings.iter() {
+        let sim = cosine_similarity(emb, centroid);
+        if sim > threshold && sim > best_sim {
+            best_sim = sim;
+            best_id = id;
+        }
+    }
+
+    best_id
+}
+
 /// Calculate cosine similarity between two embedding vectors
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
