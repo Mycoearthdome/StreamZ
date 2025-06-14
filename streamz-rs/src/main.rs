@@ -74,6 +74,16 @@ fn write_train_files(path: &str, files: &[(String, Option<usize>)]) {
     }
 }
 
+fn write_target_files(path: &str, files: &[(String, Option<usize>)]) {
+    if let Ok(mut f) = std::fs::File::create(path) {
+        for (p, c) in files {
+            if let Some(cls) = c {
+                let _ = writeln!(f, "{},{}", p, cls);
+            }
+        }
+    }
+}
+
 fn load_target_files(path: &str) -> Vec<(String, usize)> {
     if let Ok(content) = fs::read_to_string(path) {
         let mut files = Vec::new();
@@ -688,6 +698,7 @@ fn main() {
     }
 
     write_train_files(TRAIN_FILE_LIST, &train_files);
+    write_target_files(TARGET_FILE_LIST, &train_files);
     println!("Updated training file labels:");
     for (p, c) in &train_files {
         match c {
