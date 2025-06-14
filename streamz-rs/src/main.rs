@@ -636,8 +636,10 @@ fn main() {
     let processed_speakers = count_speakers(&train_files);
     println!("Processed {} speakers in this batch.", processed_speakers);
     println!("Number of speakers discovered: {}", net.output_size());
-    for (i, files) in net.file_lists().iter().enumerate() {
-        println!("Speaker {}: {} samples", i, files.len());
+    let feat_map = speaker_features.read().unwrap();
+    for i in 0..net.output_size() {
+        let count = feat_map.get(&i).map_or(0, |v| v.len());
+        println!("Speaker {}: {} samples", i, count);
     }
 
     if let Err(e) = net.save(MODEL_PATH) {
