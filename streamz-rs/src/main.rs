@@ -7,7 +7,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
     Arc, Mutex, RwLock,
 };
 use streamz_rs::{
@@ -487,11 +487,11 @@ fn main() {
         };
         compute_speaker_embeddings(&net_snapshot, &extractor).unwrap_or_default()
     }));
-    let update_embeddings = Arc::new(AtomicBool::new(true));
     let speaker_features: Arc<RwLock<HashMap<usize, Vec<Vec<f32>>>>> =
         Arc::new(RwLock::new(HashMap::new()));
     let speaker_embeddings: Arc<RwLock<HashMap<usize, Vec<f32>>>> =
         Arc::new(RwLock::new(HashMap::new()));
+
 
     {
         let mut embed_vec = embeddings.lock().unwrap();
@@ -505,6 +505,20 @@ fn main() {
             .collect();
     }
 
+    // Take snapshots of speaker metadata before parallel processing
+    let _features_snapshot = {
+        let guard = speaker_features.read().unwrap();
+        guard.clone()
+    };
+    let _embeddings_snapshot = {
+        let guard = speaker_embeddings.read().unwrap();
+        guard.clone()
+    };
+    let embed_vec_snapshot = {
+        let guard = embeddings.lock().unwrap();
+        guard.clone()
+    };
+
     train_files.par_iter_mut().for_each(|(path, class)| {
     with_thread_extractor(|extractor| {
         pb_arc.set_message(path.to_string());
@@ -515,10 +529,7 @@ fn main() {
                 pb_arc.inc(1);
                 return;
             }
-            let mut embeds = {
-                // clone current embeddings while holding the lock briefly
-                embeddings.lock().unwrap().clone()
-            };
+            let embeds = embed_vec_snapshot.clone();
             let count = loss_count.load(Ordering::SeqCst);
             let burn_phase = count < burn_in_limit_val;
             let dynamic_threshold = if burn_phase { 0.5 } else { conf_threshold };
@@ -557,6 +568,8 @@ fn main() {
                     BATCH_SIZE,
                 );
                 *total_loss.lock().unwrap() += loss;
+                net.record_training_file(label, path);
+                drop(net);
                 let new_count = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
                 if new_count % 100 == 0 {
                     recompute_embeddings(
@@ -566,9 +579,7 @@ fn main() {
                         &speaker_embeddings,
                         &embeddings,
                     );
-                    embeds = embeddings.lock().unwrap().clone();
                 }
-                net.record_training_file(label, path);
                 let emb = {
                     let net_r = net_arc.read().unwrap();
                     extract_embedding_from_features(&net_r, windows)
@@ -581,21 +592,6 @@ fn main() {
                     .push(emb);
             } else {
                 // Unlabelled: try to match known speaker
-                    if update_embeddings.load(Ordering::SeqCst) || embeds.is_empty() {
-                        let mut new_embeds = {
-                            let net_snapshot = {
-                                let guard = net_arc.read().unwrap();
-                                guard.clone()
-                            };
-                            compute_speaker_embeddings(&net_snapshot, extractor).unwrap_or_default()
-                        };
-                        {
-                            let mut guard = embeddings.lock().unwrap();
-                            *guard = new_embeds.clone();
-                        }
-                        update_embeddings.store(false, Ordering::SeqCst);
-                        embeds = new_embeds;
-                    }
 
                 eprintln!("Embedding count: {}", embeds.len());
                 let net_snapshot = {
@@ -621,6 +617,8 @@ fn main() {
                         BATCH_SIZE,
                     );
                     *total_loss.lock().unwrap() += loss;
+                    net.record_training_file(pred, path);
+                    drop(net);
                     let new_count = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
                     if new_count % 100 == 0 {
                         recompute_embeddings(
@@ -630,9 +628,7 @@ fn main() {
                             &speaker_embeddings,
                             &embeddings,
                         );
-                        embeds = embeddings.lock().unwrap().clone();
                     }
-                    net.record_training_file(pred, path);
                     let emb = {
                         let net_snapshot = {
                             let guard = net_arc.read().unwrap();
@@ -666,6 +662,8 @@ fn main() {
                         BATCH_SIZE,
                     );
                     *total_loss.lock().unwrap() += loss;
+                    net.record_training_file(new_label, path);
+                    drop(net);
                     let new_count = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
                     if new_count % 100 == 0 {
                         recompute_embeddings(
@@ -675,9 +673,7 @@ fn main() {
                             &speaker_embeddings,
                             &embeddings,
                         );
-                        embeds = embeddings.lock().unwrap().clone();
                     }
-                    net.record_training_file(new_label, path);
                     let emb = {
                         let net_snapshot = {
                             let guard = net_arc.read().unwrap();
