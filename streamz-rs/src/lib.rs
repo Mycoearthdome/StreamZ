@@ -671,6 +671,7 @@ pub fn train_from_files(
 /// slightly "deeper" network without pulling in heavyweight dependencies we now
 /// include a second hidden layer. This keeps the code self contained while
 /// giving the model a bit more capacity.
+#[derive(Clone)]
 pub struct SimpleNeuralNet {
     w1: Array2<f32>,
     b1: Array1<f32>,

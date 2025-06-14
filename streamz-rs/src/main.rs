@@ -149,8 +149,60 @@ fn precache_mp3_files(files: &mut [(String, Option<usize>)]) {
     }
 }
 
+fn recompute_embeddings(
+    net_arc: &Arc<RwLock<SimpleNeuralNet>>,
+    extractor: &FeatureExtractor,
+    speaker_features: &Arc<RwLock<HashMap<usize, Vec<Vec<f32>>>>>,
+    speaker_embeddings: &Arc<RwLock<HashMap<usize, Vec<f32>>>>,
+    embeddings: &Arc<Mutex<Vec<(Vec<f32>, f32, f32)>>>,
+) {
+    let net_snapshot = {
+        let guard = net_arc.read().unwrap();
+        guard.clone()
+    };
+    let feats_snapshot = {
+        let guard = speaker_features.read().unwrap();
+        guard.clone()
+    };
+    let mut new_embeds =
+        compute_speaker_embeddings(&net_snapshot, extractor).unwrap_or_default();
+    let mut avg_map: HashMap<usize, Vec<f32>> = HashMap::new();
+    for (id, fs) in &feats_snapshot {
+        avg_map.insert(*id, average_vectors(fs));
+    }
+    {
+        let mut map = speaker_embeddings.write().unwrap();
+        for (id, feat) in avg_map {
+            map.insert(id, feat);
+        }
+        new_embeds = map
+            .iter()
+            .map(|(_, v)| (v.clone(), 0.0, 0.0))
+            .collect();
+    }
+    {
+        let mut guard = embeddings.lock().unwrap();
+        *guard = new_embeds;
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
+    std::thread::spawn(|| loop {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let deadlocks = parking_lot::deadlock::check_deadlock();
+        if deadlocks.is_empty() {
+            continue;
+        }
+        eprintln!("⚠️ Detected {} deadlocks!", deadlocks.len());
+        for (i, threads) in deadlocks.iter().enumerate() {
+            eprintln!("Deadlock #{}", i);
+            for t in threads {
+                eprintln!("Thread Id {:#?}", t.thread_id());
+                eprintln!("{:#?}", t.backtrace());
+            }
+        }
+    });
     let mut conf_threshold = DEFAULT_CONF_THRESHOLD;
     let mut eval_split = 0.2f32;
     let mut burn_in_limit: Option<usize> = None;
@@ -283,7 +335,10 @@ fn main() {
             count_speakers(&train_files).max(1),
         )));
         if !train_refs.is_empty() {
-            let out_sz = net_arc.read().unwrap().output_size();
+            let out_sz = {
+                let guard = net_arc.read().unwrap();
+                guard.output_size()
+            };
             let _ = train_from_files(
                 net_arc.clone(),
                 &train_refs,
@@ -389,7 +444,10 @@ fn main() {
             .filter_map(|(p, c)| c.map(|cls| (p.as_str(), cls)))
             .collect();
         if !train_refs.is_empty() {
-            let out_sz = net_arc.read().unwrap().output_size();
+            let out_sz = {
+                let guard = net_arc.read().unwrap();
+                guard.output_size()
+            };
             if let Err(e) = train_from_files(
                 net_arc.clone(),
                 &train_refs,
@@ -423,12 +481,15 @@ fn main() {
     let total_loss = Arc::new(Mutex::new(0.0f32));
     let loss_count = Arc::new(AtomicUsize::new(0));
     let embeddings = Arc::new(Mutex::new({
-        let guard = net_arc.read().unwrap();
-        compute_speaker_embeddings(&guard, &extractor).unwrap_or_default()
+        let net_snapshot = {
+            let guard = net_arc.read().unwrap();
+            guard.clone()
+        };
+        compute_speaker_embeddings(&net_snapshot, &extractor).unwrap_or_default()
     }));
     let update_embeddings = Arc::new(AtomicBool::new(true));
-    let speaker_features: Arc<Mutex<HashMap<usize, Vec<Vec<f32>>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let speaker_features: Arc<RwLock<HashMap<usize, Vec<Vec<f32>>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
     let speaker_embeddings: Arc<RwLock<HashMap<usize, Vec<f32>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
@@ -473,7 +534,7 @@ fn main() {
                     extract_embedding_from_features(&net_r, windows)
                 };
                 speaker_features
-                    .lock()
+                    .write()
                     .unwrap()
                     .entry(new_label)
                     .or_default()
@@ -498,25 +559,14 @@ fn main() {
                 *total_loss.lock().unwrap() += loss;
                 let new_count = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
                 if new_count % 100 == 0 {
-                    let mut new_embeds = {
-                        let net_read = net_arc.read().unwrap();
-                        compute_speaker_embeddings(&net_read, extractor).unwrap_or_default()
-                    };
-                    let feats = speaker_features.lock().unwrap();
-                    let mut map = speaker_embeddings.write().unwrap();
-                    for (id, fs) in feats.iter() {
-                        let mean_feat = average_vectors(fs);
-                        map.insert(*id, mean_feat);
-                    }
-                    new_embeds = map
-                        .iter()
-                        .map(|(_, v)| (v.clone(), 0.0, 0.0))
-                        .collect();
-                    {
-                        let mut guard = embeddings.lock().unwrap();
-                        *guard = new_embeds.clone();
-                    }
-                    embeds = new_embeds;
+                    recompute_embeddings(
+                        &net_arc,
+                        extractor,
+                        &speaker_features,
+                        &speaker_embeddings,
+                        &embeddings,
+                    );
+                    embeds = embeddings.lock().unwrap().clone();
                 }
                 net.record_training_file(label, path);
                 let emb = {
@@ -524,33 +574,38 @@ fn main() {
                     extract_embedding_from_features(&net_r, windows)
                 };
                 speaker_features
-                    .lock()
+                    .write()
                     .unwrap()
                     .entry(label)
                     .or_default()
                     .push(emb);
             } else {
                 // Unlabelled: try to match known speaker
-                if update_embeddings.load(Ordering::SeqCst) || embeds.is_empty() {
-                    let mut new_embeds = {
-                        let net_read = net_arc.read().unwrap();
-                        compute_speaker_embeddings(&net_read, extractor).unwrap_or_default()
-                    };
-                    {
-                        let mut guard = embeddings.lock().unwrap();
-                        *guard = new_embeds.clone();
+                    if update_embeddings.load(Ordering::SeqCst) || embeds.is_empty() {
+                        let mut new_embeds = {
+                            let net_snapshot = {
+                                let guard = net_arc.read().unwrap();
+                                guard.clone()
+                            };
+                            compute_speaker_embeddings(&net_snapshot, extractor).unwrap_or_default()
+                        };
+                        {
+                            let mut guard = embeddings.lock().unwrap();
+                            *guard = new_embeds.clone();
+                        }
+                        update_embeddings.store(false, Ordering::SeqCst);
+                        embeds = new_embeds;
                     }
-                    update_embeddings.store(false, Ordering::SeqCst);
-                    embeds = new_embeds;
-                }
 
                 eprintln!("Embedding count: {}", embeds.len());
-                let net_read = net_arc.read().unwrap();
+                let net_snapshot = {
+                    let guard = net_arc.read().unwrap();
+                    guard.clone()
+                };
                 if let Some(pred) =
-                    identify_speaker_cosine_feats(&net_read, &embeds, windows, dynamic_threshold)
+                    identify_speaker_cosine_feats(&net_snapshot, &embeds, windows, dynamic_threshold)
                 {
                     eprintln!("Path: {}, Predicted: {:?}, Threshold: {}", path, pred, dynamic_threshold);
-                    drop(net_read);
                     *class = Some(pred);
                     let mut net = net_arc.write().unwrap();
                     let sz = net.output_size();
@@ -568,40 +623,31 @@ fn main() {
                     *total_loss.lock().unwrap() += loss;
                     let new_count = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
                     if new_count % 100 == 0 {
-                        let mut new_embeds = {
-                            let net_read = net_arc.read().unwrap();
-                            compute_speaker_embeddings(&net_read, extractor).unwrap_or_default()
-                        };
-                        let feats = speaker_features.lock().unwrap();
-                        let mut map = speaker_embeddings.write().unwrap();
-                        for (id, fs) in feats.iter() {
-                            let mean_feat = average_vectors(fs);
-                            map.insert(*id, mean_feat);
-                        }
-                        new_embeds = map
-                            .iter()
-                            .map(|(_, v)| (v.clone(), 0.0, 0.0))
-                            .collect();
-                        {
-                            let mut guard = embeddings.lock().unwrap();
-                            *guard = new_embeds.clone();
-                        }
-                        embeds = new_embeds;
+                        recompute_embeddings(
+                            &net_arc,
+                            extractor,
+                            &speaker_features,
+                            &speaker_embeddings,
+                            &embeddings,
+                        );
+                        embeds = embeddings.lock().unwrap().clone();
                     }
                     net.record_training_file(pred, path);
                     let emb = {
-                        let net_r = net_arc.read().unwrap();
-                        extract_embedding_from_features(&net_r, windows)
+                        let net_snapshot = {
+                            let guard = net_arc.read().unwrap();
+                            guard.clone()
+                        };
+                        extract_embedding_from_features(&net_snapshot, windows)
                     };
                     speaker_features
-                        .lock()
+                        .write()
                         .unwrap()
                         .entry(pred)
                         .or_default()
                         .push(emb);
                 } else {
                     eprintln!("Path: {}, no match above threshold {}", path, dynamic_threshold);
-                    drop(net_read);
                     // New speaker: expand class
                     let mut net = net_arc.write().unwrap();
                     net.add_output_class();
@@ -622,33 +668,25 @@ fn main() {
                     *total_loss.lock().unwrap() += loss;
                     let new_count = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
                     if new_count % 100 == 0 {
-                        let mut new_embeds = {
-                            let net_read = net_arc.read().unwrap();
-                            compute_speaker_embeddings(&net_read, extractor).unwrap_or_default()
-                        };
-                        let feats = speaker_features.lock().unwrap();
-                        let mut map = speaker_embeddings.write().unwrap();
-                        for (id, fs) in feats.iter() {
-                            let mean_feat = average_vectors(fs);
-                            map.insert(*id, mean_feat);
-                        }
-                        new_embeds = map
-                            .iter()
-                            .map(|(_, v)| (v.clone(), 0.0, 0.0))
-                            .collect();
-                        {
-                            let mut guard = embeddings.lock().unwrap();
-                            *guard = new_embeds.clone();
-                        }
-                        embeds = new_embeds;
+                        recompute_embeddings(
+                            &net_arc,
+                            extractor,
+                            &speaker_features,
+                            &speaker_embeddings,
+                            &embeddings,
+                        );
+                        embeds = embeddings.lock().unwrap().clone();
                     }
                     net.record_training_file(new_label, path);
                     let emb = {
-                        let net_r = net_arc.read().unwrap();
-                        extract_embedding_from_features(&net_r, windows)
+                        let net_snapshot = {
+                            let guard = net_arc.read().unwrap();
+                            guard.clone()
+                        };
+                        extract_embedding_from_features(&net_snapshot, windows)
                     };
                     speaker_features
-                        .lock()
+                        .write()
                         .unwrap()
                         .entry(new_label)
                         .or_default()
