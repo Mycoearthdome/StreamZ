@@ -309,6 +309,7 @@ fn main() {
         eprintln!("{} is empty", TRAIN_FILE_LIST);
         return;
     }
+    let original_paths: Vec<String> = train_files.iter().map(|(p, _)| p.clone()).collect();
     let mut target_files = load_target_files(TARGET_FILE_LIST);
 
     // Convert all MP3 files to cached WAVs before proceeding
@@ -697,10 +698,15 @@ fn main() {
         println!("Average training loss: {:.4}", final_loss / count as f32);
     }
 
-    write_train_files(TRAIN_FILE_LIST, &train_files);
+    let updated_paths: Vec<(String, Option<usize>)> = original_paths
+        .into_iter()
+        .zip(train_files.iter().map(|(_, c)| *c))
+        .map(|(p, c)| (p, c))
+        .collect();
+    write_train_files(TRAIN_FILE_LIST, &updated_paths);
     write_target_files(TARGET_FILE_LIST, &train_files);
     println!("Updated training file labels:");
-    for (p, c) in &train_files {
+    for (p, c) in &updated_paths {
         match c {
             Some(cls) => println!("{} -> speaker {}", p, cls + 1),
             None => println!("{} -> speaker unknown", p),
