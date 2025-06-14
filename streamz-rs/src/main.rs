@@ -13,7 +13,7 @@ use std::sync::{
 use streamz_rs::{
 
     average_vectors, batch_resample, compute_speaker_embeddings,
-    extract_embedding_from_features, identify_speaker_cosine_feats,
+    extract_embedding_from_features,
     identify_speaker_with_threshold, load_and_resample_file, load_audio_samples,
     pretrain_from_features, set_wav_cache_enabled, train_from_files, wav_cache_enabled,
     FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE, with_thread_extractor,
@@ -151,22 +151,15 @@ fn precache_mp3_files(files: &mut [(String, Option<usize>)]) {
 }
 
 fn recompute_embeddings(
-    net_arc: &Arc<RwLock<SimpleNeuralNet>>,
-    extractor: &FeatureExtractor,
     speaker_features: &Arc<RwLock<HashMap<usize, Vec<Vec<f32>>>>>,
     speaker_embeddings: &Arc<RwLock<HashMap<usize, Vec<f32>>>>,
     embeddings: &Arc<Mutex<Vec<(Vec<f32>, f32, f32)>>>,
 ) {
-    let net_snapshot = {
-        let guard = net_arc.read().unwrap();
-        guard.clone()
-    };
     let feats_snapshot = {
         let guard = speaker_features.read().unwrap();
         guard.clone()
     };
-    let mut new_embeds =
-        compute_speaker_embeddings(&net_snapshot, extractor).unwrap_or_default();
+    let new_embeds: Vec<(Vec<f32>, f32, f32)>;
     let mut avg_map: HashMap<usize, Vec<f32>> = HashMap::new();
     for (id, fs) in &feats_snapshot {
         avg_map.insert(*id, average_vectors(fs));
@@ -352,7 +345,7 @@ fn main() {
                 &extractor,
             );
         }
-        let mut net = match Arc::try_unwrap(net_arc) {
+        let net = match Arc::try_unwrap(net_arc) {
             Ok(m) => m.into_inner().unwrap(),
             Err(_) => panic!("Arc has other references"),
         };
@@ -418,7 +411,7 @@ fn main() {
     }
 
     let mut num_speakers = count_speakers(&train_files);
-    let mut net = if Path::new(MODEL_PATH).exists() {
+    let net = if Path::new(MODEL_PATH).exists() {
         match SimpleNeuralNet::load(MODEL_PATH) {
             Ok(n) => {
                 println!("Loaded saved model from {}", MODEL_PATH);
@@ -515,13 +508,13 @@ fn main() {
         let guard = speaker_embeddings.read().unwrap();
         guard.clone()
     };
-    let embed_vec_snapshot = {
+    let _embed_vec_snapshot = {
         let guard = embeddings.lock().unwrap();
         guard.clone()
     };
 
-        train_files.par_iter_mut().enumerate().for_each(|(i, (path, class))| {
-        with_thread_extractor(|extractor| {
+        train_files.par_iter_mut().enumerate().for_each(|(_i, (path, class))| {
+        with_thread_extractor(|_extractor| {
             pb_arc.set_message(path.to_string());
             if let Some(windows) = feats_arc.get(path) {
                 if windows.len() < 5 {
@@ -592,7 +585,9 @@ fn main() {
                 let updated = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
                 if updated % 100 == 0 {
                     recompute_embeddings(
-                        &net_arc, extractor, &speaker_features, &speaker_embeddings, &embeddings,
+                        &speaker_features,
+                        &speaker_embeddings,
+                        &embeddings,
                     );
                 }
             } else {
@@ -605,7 +600,7 @@ fn main() {
     pb_arc.finish_and_clear();
     let final_loss = *total_loss.lock().unwrap();
     let count = loss_count.load(Ordering::SeqCst);
-    let mut net = match Arc::try_unwrap(net_arc) {
+    let net = match Arc::try_unwrap(net_arc) {
         Ok(m) => m.into_inner().unwrap(),
         Err(_) => panic!("Arc has other references"),
     };
