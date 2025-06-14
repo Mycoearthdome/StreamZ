@@ -109,6 +109,26 @@ fn normalize(v: &mut [f32]) {
     }
 }
 
+/// Compute the mean vector for a slice of vectors.
+///
+/// The returned mean is normalised to unit length.
+pub fn average_vectors(vectors: &[Vec<f32>]) -> Vec<f32> {
+    if vectors.is_empty() {
+        return Vec::new();
+    }
+    let mut avg = vec![0.0f32; vectors[0].len()];
+    for v in vectors {
+        for (i, val) in v.iter().enumerate() {
+            avg[i] += *val;
+        }
+    }
+    for a in &mut avg {
+        *a /= vectors.len() as f32;
+    }
+    normalize(&mut avg);
+    avg
+}
+
 /// Convert a raw i16 audio sample to a normalized f32 value in [-1.0, 1.0]
 pub fn i16_to_f32(sample: i16) -> f32 {
     sample as f32 / i16::MAX as f32
@@ -271,6 +291,19 @@ fn window_samples_with_plan(
         let mut frame = base[i].clone();
         frame.extend(&deltas[i]);
         frame.extend(&delta2[i]);
+        let mean: f32 = frame.iter().copied().sum::<f32>() / frame.len() as f32;
+        let var: f32 = frame
+            .iter()
+            .map(|x| {
+                let d = *x - mean;
+                d * d
+            })
+            .sum::<f32>()
+            / frame.len() as f32;
+        let std = var.sqrt().max(1e-6);
+        for v in frame.iter_mut() {
+            *v = (*v - mean) / std;
+        }
         features.push(frame);
     }
 

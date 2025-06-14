@@ -12,7 +12,8 @@ use std::sync::{
 };
 use streamz_rs::{
 
-    batch_resample, compute_speaker_embeddings, identify_speaker_cosine_feats,
+    average_vectors, batch_resample, compute_speaker_embeddings,
+    extract_embedding_from_features, identify_speaker_cosine_feats,
     identify_speaker_with_threshold, load_and_resample_file, load_audio_samples,
     pretrain_from_features, set_wav_cache_enabled, train_from_files, wav_cache_enabled,
     FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE, with_thread_extractor,
@@ -426,6 +427,22 @@ fn main() {
         compute_speaker_embeddings(&guard, &extractor).unwrap_or_default()
     }));
     let update_embeddings = Arc::new(AtomicBool::new(true));
+    let speaker_features: Arc<Mutex<HashMap<usize, Vec<Vec<f32>>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let speaker_embeddings: Arc<RwLock<HashMap<usize, Vec<f32>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+
+    {
+        let mut embed_vec = embeddings.lock().unwrap();
+        let mut map = speaker_embeddings.write().unwrap();
+        for (i, (mean, _, _)) in embed_vec.iter().enumerate() {
+            map.insert(i, mean.clone());
+        }
+        *embed_vec = map
+            .iter()
+            .map(|(_, v)| (v.clone(), 0.0, 0.0))
+            .collect();
+    }
 
     train_files.par_iter_mut().for_each(|(path, class)| {
     with_thread_extractor(|extractor| {
@@ -448,6 +465,16 @@ fn main() {
                 let new_label = net.output_size() - 1;
                 *class = Some(new_label);
                 net.record_training_file(new_label, path);
+                let emb = {
+                    let net_r = net_arc.read().unwrap();
+                    extract_embedding_from_features(&net_r, windows)
+                };
+                speaker_features
+                    .lock()
+                    .unwrap()
+                    .entry(new_label)
+                    .or_default()
+                    .push(emb);
             }
 
             if let Some(label) = *class {
@@ -471,8 +498,28 @@ fn main() {
                     let net_read = net_arc.read().unwrap();
                     *embeds =
                         compute_speaker_embeddings(&net_read, extractor).unwrap_or_default();
+                    let feats = speaker_features.lock().unwrap();
+                    let mut map = speaker_embeddings.write().unwrap();
+                    for (id, fs) in feats.iter() {
+                        let mean_feat = average_vectors(fs);
+                        map.insert(*id, mean_feat);
+                    }
+                    *embeds = map
+                        .iter()
+                        .map(|(_, v)| (v.clone(), 0.0, 0.0))
+                        .collect();
                 }
                 net.record_training_file(label, path);
+                let emb = {
+                    let net_r = net_arc.read().unwrap();
+                    extract_embedding_from_features(&net_r, windows)
+                };
+                speaker_features
+                    .lock()
+                    .unwrap()
+                    .entry(label)
+                    .or_default()
+                    .push(emb);
             } else {
                 // Unlabelled: try to match known speaker
                 if update_embeddings.load(Ordering::SeqCst) || embeds.is_empty() {
@@ -508,8 +555,28 @@ fn main() {
                         let net_read = net_arc.read().unwrap();
                         *embeds =
                             compute_speaker_embeddings(&net_read, extractor).unwrap_or_default();
+                        let feats = speaker_features.lock().unwrap();
+                        let mut map = speaker_embeddings.write().unwrap();
+                        for (id, fs) in feats.iter() {
+                            let mean_feat = average_vectors(fs);
+                            map.insert(*id, mean_feat);
+                        }
+                        *embeds = map
+                            .iter()
+                            .map(|(_, v)| (v.clone(), 0.0, 0.0))
+                            .collect();
                     }
                     net.record_training_file(pred, path);
+                    let emb = {
+                        let net_r = net_arc.read().unwrap();
+                        extract_embedding_from_features(&net_r, windows)
+                    };
+                    speaker_features
+                        .lock()
+                        .unwrap()
+                        .entry(pred)
+                        .or_default()
+                        .push(emb);
                 } else {
                     eprintln!("Path: {}, no match above threshold {}", path, dynamic_threshold);
                     drop(net_read);
@@ -536,8 +603,28 @@ fn main() {
                         let net_read = net_arc.read().unwrap();
                         *embeds =
                             compute_speaker_embeddings(&net_read, extractor).unwrap_or_default();
+                        let feats = speaker_features.lock().unwrap();
+                        let mut map = speaker_embeddings.write().unwrap();
+                        for (id, fs) in feats.iter() {
+                            let mean_feat = average_vectors(fs);
+                            map.insert(*id, mean_feat);
+                        }
+                        *embeds = map
+                            .iter()
+                            .map(|(_, v)| (v.clone(), 0.0, 0.0))
+                            .collect();
                     }
                     net.record_training_file(new_label, path);
+                    let emb = {
+                        let net_r = net_arc.read().unwrap();
+                        extract_embedding_from_features(&net_r, windows)
+                    };
+                    speaker_features
+                        .lock()
+                        .unwrap()
+                        .entry(new_label)
+                        .or_default()
+                        .push(emb);
                 }
             }
         } else {
