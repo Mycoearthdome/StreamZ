@@ -13,12 +13,13 @@ use std::sync::{
 use streamz_rs::{
     average_vectors, batch_resample, compute_speaker_embeddings, extract_embedding_from_features,
     identify_speaker_from_embedding, identify_speaker_with_threshold_feats, load_and_resample_file,
-    pretrain_from_features, set_wav_cache_enabled, train_from_files, wav_cache_enabled,
+    pretrain_from_features, set_wav_cache_enabled, train_from_files,
     with_thread_extractor, FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
 };
 
 const MODEL_PATH: &str = "model.npz";
 const TRAIN_FILE_LIST: &str = "train_files.txt";
+const TARGET_FILE_LIST: &str = "target_files.txt";
 /// Confidence threshold for assigning a sample to an existing speaker.
 /// Higher values make the program less eager to reuse a known speaker
 /// and instead create a new one when confidence is low.
@@ -68,6 +69,41 @@ fn write_train_files(path: &str, files: &[(String, Option<usize>)]) {
                 None => {
                     let _ = writeln!(f, "{}", p);
                 }
+            }
+        }
+    }
+}
+
+fn load_target_files(path: &str) -> Vec<(String, usize)> {
+    if let Ok(content) = fs::read_to_string(path) {
+        let mut files = Vec::new();
+        for line in content.lines() {
+            let mut parts = line.split(',');
+            if let (Some(p), Some(c)) = (parts.next(), parts.next()) {
+                let p = p.trim();
+                let c = c.trim();
+                if p.is_empty() {
+                    continue;
+                }
+                if let Ok(cls) = c.parse::<usize>() {
+                    files.push((p.to_string(), cls));
+                }
+            }
+        }
+        files
+    } else {
+        Vec::new()
+    }
+}
+
+fn precache_target_files(files: &mut [(String, usize)]) {
+    for (path, _) in files.iter_mut() {
+        if path.to_ascii_lowercase().ends_with(".mp3") {
+            let local_wav = Path::new(path).with_extension("wav");
+            if local_wav.exists() {
+                *path = local_wav.to_string_lossy().into_owned();
+            } else if let Some(new_path) = cache_mp3_as_wav(path) {
+                *path = new_path;
             }
         }
     }
@@ -138,7 +174,10 @@ fn cache_mp3_as_wav(original: &str) -> Option<String> {
 fn precache_mp3_files(files: &mut [(String, Option<usize>)]) {
     for (path, _) in files.iter_mut() {
         if path.to_ascii_lowercase().ends_with(".mp3") {
-            if let Some(new_path) = cache_mp3_as_wav(path) {
+            let local_wav = Path::new(path).with_extension("wav");
+            if local_wav.exists() {
+                *path = local_wav.to_string_lossy().into_owned();
+            } else if let Some(new_path) = cache_mp3_as_wav(path) {
                 *path = new_path;
             }
         }
@@ -260,14 +299,19 @@ fn main() {
         eprintln!("{} is empty", TRAIN_FILE_LIST);
         return;
     }
+    let mut target_files = load_target_files(TARGET_FILE_LIST);
 
-    // Convert all MP3 files to cached WAVs before proceeding when enabled
-    if wav_cache_enabled() {
-        precache_mp3_files(&mut train_files);
+    // Convert all MP3 files to cached WAVs before proceeding
+    precache_mp3_files(&mut train_files);
+    if eval_mode {
+        precache_target_files(&mut target_files);
     }
 
     // Decode and resample all files in parallel once
-    let path_list: Vec<String> = train_files.iter().map(|(p, _)| p.clone()).collect();
+    let mut path_list: Vec<String> = train_files.iter().map(|(p, _)| p.clone()).collect();
+    if eval_mode {
+        path_list.extend(target_files.iter().map(|(p, _)| p.clone()));
+    }
     let resampled_audio = batch_resample(&path_list);
     let feature_map: HashMap<String, Vec<Vec<f32>>> = resampled_audio
         .into_par_iter()
@@ -293,24 +337,31 @@ fn main() {
             eprintln!("No labelled data available for evaluation");
             return;
         }
-        use std::collections::HashMap;
-        let mut by_class: HashMap<usize, Vec<String>> = HashMap::new();
-        for (path, cls) in labelled {
-            by_class.entry(cls).or_default().push(path);
-        }
-        let mut eval_set: Vec<(String, usize)> = Vec::new();
-        let mut train_refs_owned: Vec<(String, usize)> = Vec::new();
-        for (cls, mut paths) in by_class {
-            paths.shuffle(&mut rng);
-            let split_count = (paths.len() as f32 * eval_split).ceil() as usize;
-            let eval_part: Vec<(String, usize)> = paths
-                .split_off(paths.len().saturating_sub(split_count))
-                .into_iter()
-                .map(|p| (p, cls))
-                .collect();
-            let train_part: Vec<(String, usize)> = paths.into_iter().map(|p| (p, cls)).collect();
-            eval_set.extend(eval_part);
-            train_refs_owned.extend(train_part);
+        let mut eval_set: Vec<(String, usize)>;
+        let mut train_refs_owned: Vec<(String, usize)> = labelled.clone();
+        if !target_files.is_empty() {
+            eval_set = target_files.clone();
+        } else {
+            use std::collections::HashMap;
+            let mut by_class: HashMap<usize, Vec<String>> = HashMap::new();
+            for (path, cls) in labelled {
+                by_class.entry(cls).or_default().push(path);
+            }
+            eval_set = Vec::new();
+            train_refs_owned.clear();
+            for (cls, mut paths) in by_class {
+                paths.shuffle(&mut rng);
+                let split_count = (paths.len() as f32 * eval_split).ceil() as usize;
+                let eval_part: Vec<(String, usize)> = paths
+                    .split_off(paths.len().saturating_sub(split_count))
+                    .into_iter()
+                    .map(|p| (p, cls))
+                    .collect();
+                let train_part: Vec<(String, usize)> =
+                    paths.into_iter().map(|p| (p, cls)).collect();
+                eval_set.extend(eval_part);
+                train_refs_owned.extend(train_part);
+            }
         }
         let train_refs: Vec<(&str, usize)> = train_refs_owned
             .iter()
@@ -557,7 +608,11 @@ fn main() {
 
                     let count = loss_count.load(Ordering::SeqCst);
                     let burn_phase = count < burn_in_limit_val;
-                    let threshold = if burn_phase { 0.5 } else { DEFAULT_CONF_THRESHOLD };
+                    let threshold = if burn_phase {
+                        0.5
+                    } else {
+                        DEFAULT_CONF_THRESHOLD
+                    };
 
                     // Safe speaker assignment AFTER ensuring input is valid
                     let speaker_id = if burn_phase && class.is_none() {
