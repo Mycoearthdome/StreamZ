@@ -48,6 +48,10 @@ either list are automatically converted to `cache/<name>.wav` before
 processing. If a neighbouring `.wav` file already exists it is used
 instead of creating a cached copy.
 
+After training completes, `target_files.txt` is automatically refreshed with
+the cached WAV paths and labels from `train_files.txt`. This lets running the
+program with `--eval` use the prepared evaluation list directly.
+
 Run the classifier:
 
 ```bash
