@@ -1,7 +1,7 @@
 use hound;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -80,9 +80,8 @@ fn count_speakers(files: &[(String, Option<usize>)]) -> usize {
     files
         .iter()
         .filter_map(|(_, class)| *class)
-        .max()
-        .map(|max| max + 1)
-        .unwrap_or(0)
+        .collect::<HashSet<_>>()
+        .len()
 }
 
 /// Convert an MP3 file to a cached WAV if needed and return the new path.
