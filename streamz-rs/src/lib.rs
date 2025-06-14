@@ -1234,12 +1234,13 @@ pub fn identify_speaker_cosine(
         if sim < (mean_sim - 2.0 * *std_sim) {
             continue;
         }
-        let accept_threshold = (mean_sim + *std_sim).max(threshold);
+        let dynamic_threshold = mean_sim + *std_sim * 0.5;
+        let accepted = sim > 0.35 && (sim > dynamic_threshold || sim > 0.5);
         eprintln!(
-            "Speaker {}: sim = {:.4}, mean_sim = {:.4}, std = {:.4}, threshold = {:.4}",
-            i, sim, mean_sim, std_sim, accept_threshold
+            "Sim to speaker {}: {:.4}, dyn_thres: {:.4}, accepted: {}",
+            i, sim, dynamic_threshold, accepted
         );
-        if sim >= accept_threshold && sim > best_val {
+        if accepted && sim > best_val {
             best_val = sim;
             best_idx = Some(i);
         }
@@ -1265,12 +1266,13 @@ pub fn identify_speaker_cosine_feats(
         if sim < (mean_sim - 2.0 * *std_sim) {
             continue;
         }
-        let accept_threshold = (mean_sim + *std_sim).max(threshold);
+        let dynamic_threshold = mean_sim + *std_sim * 0.5;
+        let accepted = sim > 0.35 && (sim > dynamic_threshold || sim > 0.5);
         eprintln!(
-            "Speaker {}: sim = {:.4}, mean_sim = {:.4}, std = {:.4}, threshold = {:.4}",
-            i, sim, mean_sim, std_sim, accept_threshold
+            "Sim to speaker {}: {:.4}, dyn_thres: {:.4}, accepted: {}",
+            i, sim, dynamic_threshold, accepted
         );
-        if sim >= accept_threshold && sim > best_val {
+        if accepted && sim > best_val {
             best_val = sim;
             best_idx = Some(i);
         }
