@@ -570,7 +570,7 @@ fn main() {
                     &mut net_local,
                     windows,
                     speaker_id,
-                    output_sie,
+                    output_size,
                     5,
                     lr,
                     DROPOUT_PROB,
