@@ -557,23 +557,25 @@ fn main() {
                     };
 
                     // Decide speaker ID
-                    let speaker_id = if burn_phase && class.is_none() {
-                        let mut net_w = net_arc.write().unwrap();
-                        net_w.add_output_class();
-                        let new_label = net_w.output_size() - 1;
-                        *class = Some(new_label);
-                        new_label
-                    } else if let Some(label) = *class {
+                    let speaker_id = if let Some(label) = *class {
                         label
                     } else {
                         let embed_snapshot = speaker_embeddings.read().unwrap().clone();
                         let mut matched =
                             identify_speaker_from_embedding(&emb, &embed_snapshot, threshold);
+
                         if matched >= net_arc.read().unwrap().output_size() {
-                            let mut net_w = net_arc.write().unwrap();
-                            net_w.add_output_class();
-                            matched = net_w.output_size() - 1;
+                            if burn_phase {
+                                // Only add a new class when we are certain the
+                                // sample will be used for training. This avoids
+                                // creating empty classes when training is
+                                // skipped for any reason.
+                                let mut net_w = net_arc.write().unwrap();
+                                net_w.add_output_class();
+                                matched = net_w.output_size() - 1;
+                            }
                         }
+
                         *class = Some(matched);
                         matched
                     };
