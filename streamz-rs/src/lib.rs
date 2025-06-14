@@ -1235,6 +1235,10 @@ pub fn identify_speaker_cosine(
             continue;
         }
         let accept_threshold = (mean_sim + *std_sim).max(threshold);
+        eprintln!(
+            "Speaker {}: sim = {:.4}, mean_sim = {:.4}, std = {:.4}, threshold = {:.4}",
+            i, sim, mean_sim, std_sim, accept_threshold
+        );
         if sim >= accept_threshold && sim > best_val {
             best_val = sim;
             best_idx = Some(i);
@@ -1262,6 +1266,10 @@ pub fn identify_speaker_cosine_feats(
             continue;
         }
         let accept_threshold = (mean_sim + *std_sim).max(threshold);
+        eprintln!(
+            "Speaker {}: sim = {:.4}, mean_sim = {:.4}, std = {:.4}, threshold = {:.4}",
+            i, sim, mean_sim, std_sim, accept_threshold
+        );
         if sim >= accept_threshold && sim > best_val {
             best_val = sim;
             best_idx = Some(i);

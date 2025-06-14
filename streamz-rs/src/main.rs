@@ -238,7 +238,7 @@ fn main() {
 
     let dataset_size = train_files.len();
     let burn_in_default = ((dataset_size as f32) * DEFAULT_BURN_IN_FRAC).ceil() as usize;
-    let _burn_in_limit = burn_in_limit.unwrap_or_else(|| burn_in_default.clamp(10, 50));
+    let burn_in_limit_val = burn_in_limit.unwrap_or_else(|| burn_in_default.clamp(10, 50));
     let _max_speakers = max_speakers.unwrap_or_else(|| count_speakers(&train_files) + 10);
 
     if eval_mode {
@@ -432,9 +432,23 @@ fn main() {
         pb_arc.set_message(path.to_string());
 
         if let Some(windows) = feats_arc.get(path) {
+            if windows.len() < 5 {
+                eprintln!("Skipping {}, too short", path);
+                pb_arc.inc(1);
+                return;
+            }
             let mut embeds = embeddings.lock().unwrap();
             let count = loss_count.load(Ordering::SeqCst);
-            let dynamic_threshold = if count < 50 { 0.95 } else { conf_threshold };
+            let burn_phase = count < burn_in_limit_val;
+            let dynamic_threshold = if burn_phase { 0.5 } else { conf_threshold };
+            if burn_phase && class.is_none() {
+                eprintln!("Burn-in: forcing new label for {}", path);
+                let mut net = net_arc.write().unwrap();
+                net.add_output_class();
+                let new_label = net.output_size() - 1;
+                *class = Some(new_label);
+                net.record_training_file(new_label, path);
+            }
 
             if let Some(label) = *class {
                 // Known speaker: supervised training
@@ -463,10 +477,12 @@ fn main() {
                     update_embeddings.store(false, Ordering::SeqCst);
                 }
 
+                eprintln!("Embedding count: {}", embeds.len());
                 let net_read = net_arc.read().unwrap();
                 if let Some(pred) =
                     identify_speaker_cosine_feats(&net_read, &embeds, windows, dynamic_threshold)
                 {
+                    eprintln!("Path: {}, Predicted: {:?}, Threshold: {}", path, pred, dynamic_threshold);
                     drop(net_read);
                     *class = Some(pred);
                     let mut net = net_arc.write().unwrap();
@@ -487,6 +503,7 @@ fn main() {
                     }
                     net.record_training_file(pred, path);
                 } else {
+                    eprintln!("Path: {}, no match above threshold {}", path, dynamic_threshold);
                     drop(net_read);
                     // New speaker: expand class
                     let mut net = net_arc.write().unwrap();
