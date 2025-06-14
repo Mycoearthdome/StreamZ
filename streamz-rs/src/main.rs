@@ -565,11 +565,12 @@ fn main() {
                 let mut net_local = { net_arc.read().unwrap().clone() };
 
                 let lr = if count < 1000 { 0.05 } else { 0.01 };
+                let output_size = net_local.output_size();
                 let loss = pretrain_from_features(
                     &mut net_local,
                     windows,
                     speaker_id,
-                    net_local.output_size(),
+                    output_sie,
                     5,
                     lr,
                     DROPOUT_PROB,
