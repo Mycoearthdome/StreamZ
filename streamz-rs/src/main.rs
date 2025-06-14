@@ -13,9 +13,8 @@ use std::sync::{
 use streamz_rs::{
 
     average_vectors, batch_resample, compute_speaker_embeddings,
-    extract_embedding_from_features, identify_speaker_from_embedding,
-    identify_speaker_with_threshold,
-    load_and_resample_file, load_audio_samples,
+    extract_embedding_from_features, identify_speaker_cosine_feats,
+    identify_speaker_with_threshold, load_and_resample_file, load_audio_samples,
     pretrain_from_features, set_wav_cache_enabled, train_from_files, wav_cache_enabled,
     FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE, with_thread_extractor,
 
@@ -507,79 +506,99 @@ fn main() {
     }
 
     // Take snapshots of speaker metadata before parallel processing
+    let _features_snapshot = {
+        let guard = speaker_features.read().unwrap();
+        guard.clone()
+    };
+    let _embeddings_snapshot = {
+        let guard = speaker_embeddings.read().unwrap();
+        guard.clone()
+    };
+    let embed_vec_snapshot = {
+        let guard = embeddings.lock().unwrap();
+        guard.clone()
+    };
 
-
-    train_files
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(i, (path, class))| {
-            with_thread_extractor(|extractor| {
-                pb_arc.set_message(path.to_string());
-
-                if let Some(windows) = feats_arc.get(path) {
-                    if windows.len() < 5 {
-                        eprintln!("Skipping {}, too short", path);
-                        pb_arc.inc(1);
-                        return;
-                    }
-
-                    // --- Step 1: snapshot shared state without holding locks ---
-                    let embeddings_snapshot = {
-                        let guard = speaker_embeddings.read().unwrap();
-                        guard.clone()
-                    };
-                    let mut net_local = {
-                        let guard = net_arc.read().unwrap();
-                        guard.clone()
-                    };
-
-                    // --- Step 2: identify speaker without locks ---
-                    let emb = extract_embedding_from_features(&net_local, windows);
-                    let count = i;
-                    let burn_phase = count < burn_in_limit_val;
-                    let dynamic_threshold = if burn_phase { 0.5 } else { conf_threshold };
-                    let spk_id = identify_speaker_from_embedding(
-                        &emb,
-                        &embeddings_snapshot,
-                        dynamic_threshold,
-                    );
-
-                    // --- Step 3: train locally without locks ---
-                    if spk_id as usize >= net_local.output_size() {
-                        net_local.add_output_class();
-                    }
-                    let lr = if i < 1000 { 0.05 } else { 0.01 };
-                    let num_classes = net_local.output_size();
-                    let loss = pretrain_from_features(
-                        &mut net_local,
-                        windows,
-                        spk_id as usize,
-                        num_classes,
-                        5,
-                        lr,
-                        DROPOUT_PROB,
-                        BATCH_SIZE,
-                    );
-                    *total_loss.lock().unwrap() += loss;
-
-                    // --- Step 4: write back updates with minimal locking ---
-                    {
-                        let mut features = speaker_features.write().unwrap();
-                        let mut embeds = speaker_embeddings.write().unwrap();
-                        let mut net_global = net_arc.write().unwrap();
-
-                        features.entry(spk_id as usize).or_default().push(emb.clone());
-                        embeds.insert(spk_id as usize, average_vectors(&features[&(spk_id as usize)]));
-                        *net_global = net_local;
-                    }
-                    let _ = loss_count.fetch_add(1, Ordering::SeqCst);
-                } else {
-                    eprintln!("Missing audio for {}", path);
+        train_files.par_iter_mut().enumerate().for_each(|(i, (path, class))| {
+        with_thread_extractor(|extractor| {
+            pb_arc.set_message(path.to_string());
+            if let Some(windows) = feats_arc.get(path) {
+                if windows.len() < 5 {
+                    eprintln!("Skipping {}, too short", path);
+                    pb_arc.inc(1);
+                    return;
                 }
 
-                pb_arc.inc(1);
-            });
+                // Extract embedding snapshot
+                let emb = {
+                    let guard = net_arc.read().unwrap();
+                    extract_embedding_from_features(&guard, windows)
+                };
+
+                let count = loss_count.load(Ordering::SeqCst);
+                let burn_phase = count < burn_in_limit_val;
+                let threshold = if burn_phase { 0.5 } else { DEFAULT_CONF_THRESHOLD };
+
+                // Decide speaker ID
+                let speaker_id = if burn_phase && class.is_none() {
+                    let mut net_w = net_arc.write().unwrap();
+                    net_w.add_output_class();
+                    let new_label = net_w.output_size() - 1;
+                    *class = Some(new_label);
+                    new_label
+                } else if let Some(label) = *class {
+                    label
+                } else {
+                    let embed_snapshot = speaker_embeddings.read().unwrap().clone();
+                    let mut matched = identify_speaker_from_embedding(&emb, &embed_snapshot, threshold);
+                    if matched >= net_arc.read().unwrap().output_size() {
+                        let mut net_w = net_arc.write().unwrap();
+                        net_w.add_output_class();
+                        matched = net_w.output_size() - 1;
+                    }
+                    *class = Some(matched);
+                    matched
+                };
+
+                // Clone network for local training
+                let mut net_local = { net_arc.read().unwrap().clone() };
+
+                let lr = if count < 1000 { 0.05 } else { 0.01 };
+                let loss = pretrain_from_features(
+                    &mut net_local,
+                    windows,
+                    speaker_id,
+                    net_local.output_size(),
+                    5,
+                    lr,
+                    DROPOUT_PROB,
+                    BATCH_SIZE,
+                );
+                *total_loss.lock().unwrap() += loss;
+
+                // Write back updates
+                {
+                    let mut net_w = net_arc.write().unwrap();
+                    let mut feats_w = speaker_features.write().unwrap();
+                    let mut embeds_w = speaker_embeddings.write().unwrap();
+
+                    feats_w.entry(speaker_id).or_default().push(emb.clone());
+                    embeds_w.insert(speaker_id, average_vectors(&feats_w[&speaker_id]));
+                    *net_w = net_local;
+                }
+
+                let updated = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
+                if updated % 100 == 0 {
+                    recompute_embeddings(
+                        &net_arc, extractor, &speaker_features, &speaker_embeddings, &embeddings,
+                    );
+                }
+            } else {
+                eprintln!("Missing audio for {}", path);
+            }
+            pb_arc.inc(1);
         });
+    });
 
     pb_arc.finish_and_clear();
     let final_loss = *total_loss.lock().unwrap();
