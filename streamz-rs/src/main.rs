@@ -221,6 +221,26 @@ fn recompute_embeddings(
     }
 }
 
+fn normalize_eval_labels(files: &[(String, Option<usize>)]) -> Vec<(String, usize)> {
+    use std::collections::HashMap;
+    let mut label_map: HashMap<usize, usize> = HashMap::new();
+    let mut next_id = 0;
+    let mut result = Vec::new();
+
+    for (path, label_opt) in files {
+        if let Some(label) = label_opt {
+            let id = *label_map.entry(*label).or_insert_with(|| {
+                let id = next_id;
+                next_id += 1;
+                id
+            });
+            result.push((path.clone(), id));
+        }
+    }
+
+    result
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     std::thread::spawn(|| loop {
@@ -340,10 +360,7 @@ fn main() {
     if eval_mode {
         use rand::seq::SliceRandom;
         let mut rng = rand::thread_rng();
-        let labelled: Vec<(String, usize)> = train_files
-            .iter()
-            .filter_map(|(p, c)| c.map(|cls| (p.clone(), cls)))
-            .collect();
+        let labelled = normalize_eval_labels(&train_files);
         if labelled.is_empty() {
             eprintln!("No labelled data available for evaluation");
             return;
