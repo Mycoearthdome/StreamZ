@@ -361,7 +361,15 @@ fn main() {
                 Err(_) => panic!("Arc has other references"),
             }
         };
+        let eval_set: Vec<(String, usize)> = eval_set
+            .into_iter()
+            .filter(|(p, _)| feature_map.contains_key(p))
+            .collect();
         let total = eval_set.len();
+        if total == 0 {
+            eprintln!("No features available for evaluation");
+            return;
+        }
         let pb = ProgressBar::new(total as u64);
         pb.set_style(
             ProgressStyle::default_bar()
