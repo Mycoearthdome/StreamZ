@@ -1089,6 +1089,40 @@ pub fn identify_speaker_with_threshold(
     }
 }
 
+/// Identify a speaker using precomputed feature windows with a confidence threshold.
+pub fn identify_speaker_with_threshold_feats(
+    net: &SimpleNeuralNet,
+    windows: &[Vec<f32>],
+    threshold: f32,
+) -> Option<usize> {
+    if net.output_size() <= 1 {
+        return None;
+    }
+    let mut sums = vec![0.0f32; net.output_size()];
+    let mut count = 0f32;
+    for win in windows {
+        let out = net.forward(win);
+        for (i, v) in out.iter().enumerate() {
+            sums[i] += *v;
+        }
+        count += 1.0;
+    }
+    if count == 0.0 {
+        return None;
+    }
+    let (best_idx, best_val) = sums
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .unwrap();
+    let confidence = best_val / count;
+    if confidence >= threshold {
+        Some(best_idx)
+    } else {
+        None
+    }
+}
+
 /// Identify all speakers present in a sample using a per-window confidence
 /// threshold. Each window is classified individually and the speaker with the
 /// highest probability is counted if that probability exceeds `threshold`.

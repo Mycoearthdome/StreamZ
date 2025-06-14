@@ -11,14 +11,10 @@ use std::sync::{
     Arc, Mutex, RwLock,
 };
 use streamz_rs::{
-
-    average_vectors, batch_resample, compute_speaker_embeddings,
-    extract_embedding_from_features,
-    identify_speaker_with_threshold, load_and_resample_file, load_audio_samples,
+    average_vectors, batch_resample, compute_speaker_embeddings, extract_embedding_from_features,
+    identify_speaker_from_embedding, identify_speaker_with_threshold_feats, load_and_resample_file,
     pretrain_from_features, set_wav_cache_enabled, train_from_files, wav_cache_enabled,
-    FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE, with_thread_extractor,
-    identify_speaker_from_embedding,
-
+    with_thread_extractor, FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
 };
 
 const MODEL_PATH: &str = "model.npz";
@@ -169,10 +165,7 @@ fn recompute_embeddings(
         for (id, feat) in avg_map {
             map.insert(id, feat);
         }
-        new_embeds = map
-            .iter()
-            .map(|(_, v)| (v.clone(), 0.0, 0.0))
-            .collect();
+        new_embeds = map.iter().map(|(_, v)| (v.clone(), 0.0, 0.0)).collect();
     }
     {
         let mut guard = embeddings.lock().unwrap();
@@ -202,6 +195,8 @@ fn main() {
     let mut burn_in_limit: Option<usize> = None;
     let mut max_speakers: Option<usize> = None;
     let eval_mode = args.iter().any(|a| a == "--eval");
+    let force_retrain =
+        args.iter().any(|a| a == "--force") || args.iter().any(|a| a == "--retrain");
     let no_cache_wav = args.iter().any(|a| a == "--no-cache-wav");
     set_wav_cache_enabled(!no_cache_wav);
     let extractor = FeatureExtractor::new();
@@ -322,64 +317,89 @@ fn main() {
             .iter()
             .map(|(p, c)| (p.as_str(), *c))
             .collect();
-        let net_arc = Arc::new(RwLock::new(SimpleNeuralNet::new(
-            FEATURE_SIZE,
-            512,
-            256,
-            count_speakers(&train_files).max(1),
-        )));
-        if !train_refs.is_empty() {
-            let out_sz = {
-                let guard = net_arc.read().unwrap();
-                guard.output_size()
-            };
-            let _ = train_from_files(
-                net_arc.clone(),
-                &train_refs,
-                train_refs.len(),
-                out_sz,
-                TRAIN_EPOCHS,
-                0.01,
-                DROPOUT_PROB,
-                BATCH_SIZE,
-                &extractor,
-            );
-        }
-        let net = match Arc::try_unwrap(net_arc) {
-            Ok(m) => m.into_inner().unwrap(),
-            Err(_) => panic!("Arc has other references"),
+        let net = if Path::new(MODEL_PATH).exists() && !force_retrain {
+            match SimpleNeuralNet::load(MODEL_PATH) {
+                Ok(n) => {
+                    println!("Loaded model for evaluation");
+                    n
+                }
+                Err(e) => {
+                    eprintln!("Failed to load saved model: {}", e);
+                    SimpleNeuralNet::new(
+                        FEATURE_SIZE,
+                        512,
+                        256,
+                        count_speakers(&train_files).max(1),
+                    )
+                }
+            }
+        } else {
+            let net_arc = Arc::new(RwLock::new(SimpleNeuralNet::new(
+                FEATURE_SIZE,
+                512,
+                256,
+                count_speakers(&train_files).max(1),
+            )));
+            if !train_refs.is_empty() {
+                let out_sz = {
+                    let guard = net_arc.read().unwrap();
+                    guard.output_size()
+                };
+                let _ = train_from_files(
+                    net_arc.clone(),
+                    &train_refs,
+                    train_refs.len(),
+                    out_sz,
+                    TRAIN_EPOCHS,
+                    0.01,
+                    DROPOUT_PROB,
+                    BATCH_SIZE,
+                    &extractor,
+                );
+            }
+            match Arc::try_unwrap(net_arc) {
+                Ok(m) => m.into_inner().unwrap(),
+                Err(_) => panic!("Arc has other references"),
+            }
         };
         let total = eval_set.len();
-        let mut correct = 0usize;
-        let mut tp = 0usize;
-        let mut fp = 0usize;
-        let mut fnc = 0usize;
-        for (path, class) in &eval_set {
-            match load_audio_samples(path) {
-                Ok(samples) => {
-                    match identify_speaker_with_threshold(
-                        &net,
-                        &samples,
-                        conf_threshold,
-                        &extractor,
-                    ) {
-                        Some(pred) => {
-                            if pred == *class {
-                                tp += 1;
-                                correct += 1;
-                            } else {
-                                fp += 1;
-                                fnc += 1;
-                            }
-                        }
-                        None => {
-                            fnc += 1;
+        let pb = ProgressBar::new(total as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{msg} {bar:40} {pos}/{len} ETA {eta}")
+                .unwrap(),
+        );
+        let correct = AtomicUsize::new(0);
+        let tp = AtomicUsize::new(0);
+        let fp = AtomicUsize::new(0);
+        let fnc = AtomicUsize::new(0);
+
+        eval_set.par_iter().for_each(|(path, class)| {
+            pb.set_message(path.clone());
+            if let Some(wins) = feature_map.get(path) {
+                match identify_speaker_with_threshold_feats(&net, wins, conf_threshold) {
+                    Some(pred) => {
+                        if pred == *class {
+                            tp.fetch_add(1, Ordering::SeqCst);
+                            correct.fetch_add(1, Ordering::SeqCst);
+                        } else {
+                            fp.fetch_add(1, Ordering::SeqCst);
+                            fnc.fetch_add(1, Ordering::SeqCst);
                         }
                     }
+                    None => {
+                        fnc.fetch_add(1, Ordering::SeqCst);
+                    }
                 }
-                Err(e) => eprintln!("Skipping {}: {}", path, e),
             }
-        }
+            pb.inc(1);
+        });
+        pb.finish_with_message("Evaluation complete");
+
+        let correct = correct.load(Ordering::SeqCst);
+        let tp = tp.load(Ordering::SeqCst);
+        let fp = fp.load(Ordering::SeqCst);
+        let fnc = fnc.load(Ordering::SeqCst);
         let precision = if tp + fp > 0 {
             tp as f32 / (tp + fp) as f32
         } else {
@@ -486,17 +506,13 @@ fn main() {
     let speaker_embeddings: Arc<RwLock<HashMap<usize, Vec<f32>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
-
     {
         let mut embed_vec = embeddings.lock().unwrap();
         let mut map = speaker_embeddings.write().unwrap();
         for (i, (mean, _, _)) in embed_vec.iter().enumerate() {
             map.insert(i, mean.clone());
         }
-        *embed_vec = map
-            .iter()
-            .map(|(_, v)| (v.clone(), 0.0, 0.0))
-            .collect();
+        *embed_vec = map.iter().map(|(_, v)| (v.clone(), 0.0, 0.0)).collect();
     }
 
     // Take snapshots of speaker metadata before parallel processing
@@ -513,89 +529,93 @@ fn main() {
         guard.clone()
     };
 
-        train_files.par_iter_mut().enumerate().for_each(|(_i, (path, class))| {
-        with_thread_extractor(|_extractor| {
-            pb_arc.set_message(path.to_string());
-            if let Some(windows) = feats_arc.get(path) {
-                if windows.len() < 5 {
-                    eprintln!("Skipping {}, too short", path);
-                    pb_arc.inc(1);
-                    return;
-                }
+    train_files
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(_i, (path, class))| {
+            with_thread_extractor(|_extractor| {
+                pb_arc.set_message(path.to_string());
+                if let Some(windows) = feats_arc.get(path) {
+                    if windows.len() < 5 {
+                        eprintln!("Skipping {}, too short", path);
+                        pb_arc.inc(1);
+                        return;
+                    }
 
-                // Extract embedding snapshot
-                let emb = {
-                    let guard = net_arc.read().unwrap();
-                    extract_embedding_from_features(&guard, windows)
-                };
+                    // Extract embedding snapshot
+                    let emb = {
+                        let guard = net_arc.read().unwrap();
+                        extract_embedding_from_features(&guard, windows)
+                    };
 
-                let count = loss_count.load(Ordering::SeqCst);
-                let burn_phase = count < burn_in_limit_val;
-                let threshold = if burn_phase { 0.5 } else { DEFAULT_CONF_THRESHOLD };
+                    let count = loss_count.load(Ordering::SeqCst);
+                    let burn_phase = count < burn_in_limit_val;
+                    let threshold = if burn_phase {
+                        0.5
+                    } else {
+                        DEFAULT_CONF_THRESHOLD
+                    };
 
-                // Decide speaker ID
-                let speaker_id = if burn_phase && class.is_none() {
-                    let mut net_w = net_arc.write().unwrap();
-                    net_w.add_output_class();
-                    let new_label = net_w.output_size() - 1;
-                    *class = Some(new_label);
-                    new_label
-                } else if let Some(label) = *class {
-                    label
-                } else {
-                    let embed_snapshot = speaker_embeddings.read().unwrap().clone();
-                    let mut matched = identify_speaker_from_embedding(&emb, &embed_snapshot, threshold);
-                    if matched >= net_arc.read().unwrap().output_size() {
+                    // Decide speaker ID
+                    let speaker_id = if burn_phase && class.is_none() {
                         let mut net_w = net_arc.write().unwrap();
                         net_w.add_output_class();
-                        matched = net_w.output_size() - 1;
-                    }
-                    *class = Some(matched);
-                    matched
-                };
+                        let new_label = net_w.output_size() - 1;
+                        *class = Some(new_label);
+                        new_label
+                    } else if let Some(label) = *class {
+                        label
+                    } else {
+                        let embed_snapshot = speaker_embeddings.read().unwrap().clone();
+                        let mut matched =
+                            identify_speaker_from_embedding(&emb, &embed_snapshot, threshold);
+                        if matched >= net_arc.read().unwrap().output_size() {
+                            let mut net_w = net_arc.write().unwrap();
+                            net_w.add_output_class();
+                            matched = net_w.output_size() - 1;
+                        }
+                        *class = Some(matched);
+                        matched
+                    };
 
-                // Clone network for local training
-                let mut net_local = { net_arc.read().unwrap().clone() };
+                    // Clone network for local training
+                    let mut net_local = { net_arc.read().unwrap().clone() };
 
-                let lr = if count < 1000 { 0.05 } else { 0.01 };
-                let output_size = net_local.output_size();
-                let loss = pretrain_from_features(
-                    &mut net_local,
-                    windows,
-                    speaker_id,
-                    output_size,
-                    5,
-                    lr,
-                    DROPOUT_PROB,
-                    BATCH_SIZE,
-                );
-                *total_loss.lock().unwrap() += loss;
-
-                // Write back updates
-                {
-                    let mut net_w = net_arc.write().unwrap();
-                    let mut feats_w = speaker_features.write().unwrap();
-                    let mut embeds_w = speaker_embeddings.write().unwrap();
-
-                    feats_w.entry(speaker_id).or_default().push(emb.clone());
-                    embeds_w.insert(speaker_id, average_vectors(&feats_w[&speaker_id]));
-                    *net_w = net_local;
-                }
-
-                let updated = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
-                if updated % 100 == 0 {
-                    recompute_embeddings(
-                        &speaker_features,
-                        &speaker_embeddings,
-                        &embeddings,
+                    let lr = if count < 1000 { 0.05 } else { 0.01 };
+                    let output_size = net_local.output_size();
+                    let loss = pretrain_from_features(
+                        &mut net_local,
+                        windows,
+                        speaker_id,
+                        output_size,
+                        5,
+                        lr,
+                        DROPOUT_PROB,
+                        BATCH_SIZE,
                     );
+                    *total_loss.lock().unwrap() += loss;
+
+                    // Write back updates
+                    {
+                        let mut net_w = net_arc.write().unwrap();
+                        let mut feats_w = speaker_features.write().unwrap();
+                        let mut embeds_w = speaker_embeddings.write().unwrap();
+
+                        feats_w.entry(speaker_id).or_default().push(emb.clone());
+                        embeds_w.insert(speaker_id, average_vectors(&feats_w[&speaker_id]));
+                        *net_w = net_local;
+                    }
+
+                    let updated = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
+                    if updated % 100 == 0 {
+                        recompute_embeddings(&speaker_features, &speaker_embeddings, &embeddings);
+                    }
+                } else {
+                    eprintln!("Missing audio for {}", path);
                 }
-            } else {
-                eprintln!("Missing audio for {}", path);
-            }
-            pb_arc.inc(1);
+                pb_arc.inc(1);
+            });
         });
-    });
 
     pb_arc.finish_and_clear();
     let final_loss = *total_loss.lock().unwrap();

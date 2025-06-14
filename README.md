@@ -43,7 +43,8 @@ Run the classifier:
 
 ```bash
 ./target/release/StreamZ [--burn-in-limit <n>] [--max-speakers <n>] [--no-cache-wav] \
-                       [--threshold <value>] [--eval] [--eval-split <fraction>]
+                       [--threshold <value>] [--eval] [--eval-split <fraction>] \
+                       [--force] [--retrain]
 ```
 
 During the run every file listed in `train_files.txt` is processed.  If a line lacks a speaker label the program will attempt to match it against previously learned voices and will append the chosen label to the file.  Newly discovered speakers are added to the model automatically.  The updated model and list of files are written back to disk at the end of the run.
@@ -56,6 +57,8 @@ During the run every file listed in `train_files.txt` is processed.  If a line l
 - `--threshold <value>` adjusts the confidence threshold for reusing a known label.
 - `--eval` runs the program in evaluation mode instead of updating the model.
 - `--eval-split <fraction>` controls what fraction of labelled data is reserved for evaluation when using `--eval` (default `0.2`).
+- `--force` retrains the model even when a saved model exists.
+- `--retrain` behaves like `--force` and can be used without `--eval`.
 
 ## Feature Caching
 
