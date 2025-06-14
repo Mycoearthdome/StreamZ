@@ -542,7 +542,7 @@ fn main() {
                         return;
                     }
 
-                    // Extract embedding snapshot
+                    // Only now extract embedding
                     let emb = {
                         let guard = net_arc.read().unwrap();
                         extract_embedding_from_features(&guard, windows)
@@ -550,32 +550,27 @@ fn main() {
 
                     let count = loss_count.load(Ordering::SeqCst);
                     let burn_phase = count < burn_in_limit_val;
-                    let threshold = if burn_phase {
-                        0.5
-                    } else {
-                        DEFAULT_CONF_THRESHOLD
-                    };
+                    let threshold = if burn_phase { 0.5 } else { DEFAULT_CONF_THRESHOLD };
 
-                    // Decide speaker ID
-                    let speaker_id = if let Some(label) = *class {
+                    // Safe speaker assignment AFTER ensuring input is valid
+                    let speaker_id = if burn_phase && class.is_none() {
+                        // Prevent race by locking only when assigning
+                        let mut net_w = net_arc.write().unwrap();
+                        let new_label = net_w.output_size();
+                        net_w.add_output_class();
+                        *class = Some(new_label);
+                        new_label
+                    } else if let Some(label) = *class {
                         label
                     } else {
                         let embed_snapshot = speaker_embeddings.read().unwrap().clone();
                         let mut matched =
                             identify_speaker_from_embedding(&emb, &embed_snapshot, threshold);
-
                         if matched >= net_arc.read().unwrap().output_size() {
-                            if burn_phase {
-                                // Only add a new class when we are certain the
-                                // sample will be used for training. This avoids
-                                // creating empty classes when training is
-                                // skipped for any reason.
-                                let mut net_w = net_arc.write().unwrap();
-                                net_w.add_output_class();
-                                matched = net_w.output_size() - 1;
-                            }
+                            let mut net_w = net_arc.write().unwrap();
+                            net_w.add_output_class();
+                            matched = net_w.output_size() - 1;
                         }
-
                         *class = Some(matched);
                         matched
                     };
