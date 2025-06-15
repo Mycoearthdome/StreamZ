@@ -13,8 +13,8 @@ use std::sync::{
 use streamz_rs::{
     average_vectors, batch_resample, compute_speaker_embeddings, extract_embedding_from_features,
     identify_speaker_from_embedding, identify_speaker_with_threshold_feats, load_and_resample_file,
-    pretrain_from_features, set_wav_cache_enabled, train_from_files,
-    with_thread_extractor, FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
+    pretrain_from_features, set_wav_cache_enabled, train_from_files, with_thread_extractor,
+    FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
 };
 
 const MODEL_PATH: &str = "model.npz";
@@ -221,10 +221,11 @@ fn recompute_embeddings(
     }
 }
 
-fn normalize_eval_labels(files: &[(String, Option<usize>)]) -> Vec<(String, usize)> {
-    use std::collections::HashMap;
-    let mut label_map: HashMap<usize, usize> = HashMap::new();
-    let mut next_id = 0;
+fn normalize_eval_labels(
+    files: &[(String, Option<usize>)],
+    label_map: &mut std::collections::HashMap<usize, usize>,
+) -> Vec<(String, usize)> {
+    let mut next_id = label_map.len();
     let mut result = Vec::new();
 
     for (path, label_opt) in files {
@@ -359,8 +360,10 @@ fn main() {
 
     if eval_mode {
         use rand::seq::SliceRandom;
+        use std::collections::HashMap;
         let mut rng = rand::thread_rng();
-        let labelled = normalize_eval_labels(&train_files);
+        let mut label_map: HashMap<usize, usize> = HashMap::new();
+        let labelled = normalize_eval_labels(&train_files, &mut label_map);
         if labelled.is_empty() {
             eprintln!("No labelled data available for evaluation");
             return;
@@ -369,13 +372,13 @@ fn main() {
         let mut train_refs_owned: Vec<(String, usize)> = labelled.clone();
         if !target_files.is_empty() {
             eval_set = normalize_eval_labels(
-				&target_files
-					.iter()
-					.map(|(p, c)| (p.clone(), Some(*c)))
-					.collect::<Vec<_>>(),
-			);
+                &target_files
+                    .iter()
+                    .map(|(p, c)| (p.clone(), Some(*c)))
+                    .collect::<Vec<_>>(),
+                &mut label_map,
+            );
         } else {
-            use std::collections::HashMap;
             let mut by_class: HashMap<usize, Vec<String>> = HashMap::new();
             for (path, cls) in labelled {
                 by_class.entry(cls).or_default().push(path);
