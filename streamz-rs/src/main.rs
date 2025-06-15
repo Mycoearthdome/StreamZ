@@ -473,6 +473,7 @@ fn main() {
             if let Some(wins) = feature_map.get(path) {
                 match identify_speaker_with_threshold_feats(&net, wins, conf_threshold) {
                     Some(pred) => {
+						println!("Predicted: {}, Actual: {}", pred, *class);
                         if pred == *class {
                             tp.fetch_add(1, Ordering::SeqCst);
                             correct.fetch_add(1, Ordering::SeqCst);
