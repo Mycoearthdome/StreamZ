@@ -689,6 +689,8 @@ pub struct SimpleNeuralNet {
     file_lists: Vec<Vec<String>>,
     sample_rate: u32,
     bits: u16,
+    /// Precomputed speaker embeddings and quality metrics
+    embeddings: Vec<(Vec<f32>, f32, f32)>,
 }
 
 impl SimpleNeuralNet {
@@ -713,6 +715,7 @@ impl SimpleNeuralNet {
             file_lists: vec![Vec::new(); output],
             sample_rate: DEFAULT_SAMPLE_RATE,
             bits: 16,
+            embeddings: Vec::new(),
         }
     }
 
@@ -765,6 +768,16 @@ impl SimpleNeuralNet {
     /// Access the list of training files for each speaker.
     pub fn file_lists(&self) -> &[Vec<String>] {
         &self.file_lists
+    }
+
+    /// Replace stored speaker embeddings.
+    pub fn set_embeddings(&mut self, embeds: Vec<(Vec<f32>, f32, f32)>) {
+        self.embeddings = embeds;
+    }
+
+    /// Return the saved speaker embeddings.
+    pub fn embeddings(&self) -> &[(Vec<f32>, f32, f32)] {
+        &self.embeddings
     }
 
     /// Forward pass on a slice of f32 values
@@ -927,6 +940,20 @@ impl SimpleNeuralNet {
             let arr = Array1::<u8>::from_vec(joined.as_bytes().to_vec());
             npz.add_array(&format!("speaker_{}_files", idx), &arr)?;
         }
+        if !self.embeddings.is_empty() {
+            let dim = self.embeddings[0].0.len();
+            let mut embeds = Array2::<f32>::zeros((self.embeddings.len(), dim));
+            let mut mean_sims = Array1::<f32>::zeros(self.embeddings.len());
+            let mut std_sims = Array1::<f32>::zeros(self.embeddings.len());
+            for (i, (e, m, s)) in self.embeddings.iter().enumerate() {
+                embeds.row_mut(i).assign(&Array1::from(e.clone()));
+                mean_sims[i] = *m;
+                std_sims[i] = *s;
+            }
+            npz.add_array("speaker_embeddings", &embeds)?;
+            npz.add_array("speaker_mean_sims", &mean_sims)?;
+            npz.add_array("speaker_std_sims", &std_sims)?;
+        }
         npz.finish()?;
         Ok(())
     }
@@ -1013,6 +1040,19 @@ impl SimpleNeuralNet {
             }
         }
 
+        let mut embeddings = Vec::new();
+        if names.iter().any(|n| n == "speaker_embeddings.npy") {
+            let embeds_arr: Array2<f32> = npz.by_name("speaker_embeddings")?;
+            let mean_arr: Array1<f32> = npz.by_name("speaker_mean_sims")?;
+            let std_arr: Array1<f32> = npz.by_name("speaker_std_sims")?;
+            for i in 0..embeds_arr.nrows() {
+                let emb = embeds_arr.row(i).to_vec();
+                let mean = mean_arr[i];
+                let std = std_arr[i];
+                embeddings.push((emb, mean, std));
+            }
+        }
+
         Ok(Self {
             w1,
             b1,
@@ -1024,6 +1064,7 @@ impl SimpleNeuralNet {
             file_lists,
             sample_rate: sample_rate[0] as u32,
             bits: bits[0] as u16,
+            embeddings,
         })
     }
 }

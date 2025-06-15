@@ -438,8 +438,11 @@ fn main() {
             .collect();
         let net = if Path::new(MODEL_PATH).exists() && !force_retrain {
             match SimpleNeuralNet::load(MODEL_PATH) {
-                Ok(n) => {
+                Ok(mut n) => {
                     println!("Loaded model for evaluation");
+                    let new_embeddings =
+                        compute_speaker_embeddings(&n, &extractor).unwrap_or_else(|| vec![]);
+                    n.set_embeddings(new_embeddings);
                     n
                 }
                 Err(e) => {
@@ -561,8 +564,11 @@ fn main() {
     let mut num_speakers = count_speakers(&train_files);
     let net = if Path::new(MODEL_PATH).exists() {
         match SimpleNeuralNet::load(MODEL_PATH) {
-            Ok(n) => {
+            Ok(mut n) => {
                 println!("Loaded saved model from {}", MODEL_PATH);
+                let new_embeddings =
+                    compute_speaker_embeddings(&n, &extractor).unwrap_or_else(|| vec![]);
+                n.set_embeddings(new_embeddings);
                 n
             }
             Err(e) => {
@@ -780,6 +786,9 @@ fn main() {
         println!("Speaker {}: {} samples", i, count);
     }
 
+    let new_embeddings = compute_speaker_embeddings(&net, &extractor).unwrap_or_else(|| vec![]);
+    let mut net = net;
+    net.set_embeddings(new_embeddings);
     if let Err(e) = net.save(MODEL_PATH) {
         eprintln!("Failed to save model: {}", e);
     }
