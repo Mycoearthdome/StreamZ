@@ -72,7 +72,7 @@ During the run every file listed in `train_files.txt` is processed.  If a line l
 - `--eval-split <fraction>` controls what fraction of labelled data is reserved for evaluation when `target_files.txt` is not present (default `0.2`).
 - `--force` retrains the model even when a saved model exists.
 - `--retrain` behaves like `--force` and can be used without `--eval`.
-- `--check-embeddings` prints embedding quality metrics for the saved model.
+- `--check-embeddings` loads `model.npz` and prints embedding quality metrics for the saved model.
 
 ## Feature Caching
 
@@ -97,7 +97,7 @@ greatly speeds up repeated training or evaluation on the same dataset.
   reused for faster startup.
 - Use `--eval` to measure model accuracy without updating weights.
 - `--eval-split <fraction>` sets the portion of labelled data reserved for evaluation when `target_files.txt` is absent.
-- `--check-embeddings` prints embedding quality metrics for the saved model.
+- `--check-embeddings` loads `model.npz` and prints embedding quality metrics for the saved model.
 
 ## Threaded Components
 

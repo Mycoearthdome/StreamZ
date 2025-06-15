@@ -294,8 +294,11 @@ fn main() {
     let extractor = FeatureExtractor::new();
     if check_embeddings {
         match SimpleNeuralNet::load(MODEL_PATH) {
-            Ok(net) => print_embedding_quality(&net, &extractor),
-            Err(e) => eprintln!("Failed to load model: {}", e),
+            Ok(net) => {
+                println!("Loaded {} for embedding check", MODEL_PATH);
+                print_embedding_quality(&net, &extractor);
+            }
+            Err(e) => eprintln!("Failed to load model from {}: {}", MODEL_PATH, e),
         }
         return;
     }
