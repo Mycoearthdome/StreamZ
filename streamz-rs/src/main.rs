@@ -223,6 +223,20 @@ fn recompute_embeddings(
 }
 
 fn print_embedding_quality(net: &SimpleNeuralNet, extractor: &FeatureExtractor) {
+    if !net.embeddings().is_empty() {
+        println!("Saved embeddings found in model.npz:");
+        let mut sum = 0.0f32;
+        for (i, (_mean, mean_sim, std_sim)) in net.embeddings().iter().enumerate() {
+            sum += *mean_sim;
+            println!(
+                "Speaker {}: mean similarity {:.4}, std dev {:.4}",
+                i, mean_sim, std_sim
+            );
+        }
+        println!("Average mean similarity: {:.4}", sum / net.embeddings().len() as f32);
+        return;
+    }
+
     match compute_speaker_embeddings(net, extractor) {
         Some(embeds) => {
             if embeds.is_empty() {
