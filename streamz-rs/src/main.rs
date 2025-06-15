@@ -28,7 +28,8 @@ const DEFAULT_CONF_THRESHOLD: f32 = 0.8;
 /// value is provided via `--burn-in-limit`.
 const DEFAULT_BURN_IN_FRAC: f32 = 0.2;
 /// Number of training epochs for each file.
-const TRAIN_EPOCHS: usize = 15;
+/// Increasing this can improve model convergence at the cost of longer runtime.
+const TRAIN_EPOCHS: usize = 60;
 /// Dropout probability used during training.
 const DROPOUT_PROB: f32 = streamz_rs::DEFAULT_DROPOUT;
 /// Number of feature windows per training batch.
@@ -221,6 +222,27 @@ fn recompute_embeddings(
     }
 }
 
+fn print_embedding_quality(net: &SimpleNeuralNet, extractor: &FeatureExtractor) {
+    match compute_speaker_embeddings(net, extractor) {
+        Some(embeds) => {
+            if embeds.is_empty() {
+                println!("No embeddings available to evaluate");
+                return;
+            }
+            let mut sum = 0.0f32;
+            for (i, (_mean, mean_sim, std_sim)) in embeds.iter().enumerate() {
+                sum += *mean_sim;
+                println!(
+                    "Speaker {}: mean similarity {:.4}, std dev {:.4}",
+                    i, mean_sim, std_sim
+                );
+            }
+            println!("Average mean similarity: {:.4}", sum / embeds.len() as f32);
+        }
+        None => println!("Failed to compute speaker embeddings"),
+    }
+}
+
 fn normalize_eval_labels(
     files: &[(String, Option<usize>)],
     label_map: &mut std::collections::HashMap<usize, usize>,
@@ -264,11 +286,19 @@ fn main() {
     let mut burn_in_limit: Option<usize> = None;
     let mut max_speakers: Option<usize> = None;
     let eval_mode = args.iter().any(|a| a == "--eval");
+    let check_embeddings = args.iter().any(|a| a == "--check-embeddings");
     let force_retrain =
         args.iter().any(|a| a == "--force") || args.iter().any(|a| a == "--retrain");
     let no_cache_wav = args.iter().any(|a| a == "--no-cache-wav");
     set_wav_cache_enabled(!no_cache_wav);
     let extractor = FeatureExtractor::new();
+    if check_embeddings {
+        match SimpleNeuralNet::load(MODEL_PATH) {
+            Ok(net) => print_embedding_quality(&net, &extractor),
+            Err(e) => eprintln!("Failed to load model: {}", e),
+        }
+        return;
+    }
     if let Some(idx) = args.iter().position(|a| a == "--threshold") {
         if let Some(val) = args.get(idx + 1) {
             match val.parse::<f32>() {
@@ -473,7 +503,7 @@ fn main() {
             if let Some(wins) = feature_map.get(path) {
                 match identify_speaker_with_threshold_feats(&net, wins, conf_threshold) {
                     Some(pred) => {
-						println!("Predicted: {}, Actual: {}", pred, *class);
+                        println!("Predicted: {}, Actual: {}", pred, *class);
                         if pred == *class {
                             tp.fetch_add(1, Ordering::SeqCst);
                             correct.fetch_add(1, Ordering::SeqCst);
