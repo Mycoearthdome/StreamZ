@@ -72,6 +72,7 @@ During the run every file listed in `train_files.txt` is processed.  If a line l
 - `--eval-split <fraction>` controls what fraction of labelled data is reserved for evaluation when `target_files.txt` is not present (default `0.2`).
 - `--force` retrains the model even when a saved model exists.
 - `--retrain` behaves like `--force` and can be used without `--eval`.
+- `--check-embeddings` prints embedding quality metrics for the saved model.
 
 ## Feature Caching
 
@@ -82,7 +83,7 @@ greatly speeds up repeated training or evaluation on the same dataset.
 
 ## Training Tips
 
-- The default training loop now runs for 15 epochs per file with a small
+ - The default training loop now runs for 60 epochs per file with a small
   dropout rate of 20% to reduce overfitting.
 - You can adjust the confidence threshold for matching existing speakers using
   `--threshold <value>`. Lower values (e.g. `0.5`) make the program more willing
@@ -96,6 +97,7 @@ greatly speeds up repeated training or evaluation on the same dataset.
   reused for faster startup.
 - Use `--eval` to measure model accuracy without updating weights.
 - `--eval-split <fraction>` sets the portion of labelled data reserved for evaluation when `target_files.txt` is absent.
+- `--check-embeddings` prints embedding quality metrics for the saved model.
 
 ## Threaded Components
 
