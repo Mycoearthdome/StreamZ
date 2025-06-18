@@ -413,29 +413,31 @@ fn main() {
     let _max_speakers = max_speakers.unwrap_or_else(|| count_speakers(&train_files) + 10);
 
     if eval_mode {
-		let threshold = config.threshold.unwrap_or(0.8);
-		println!("Evaluating with threshold = {}", threshold);
+		println!("Evaluating with threshold = {}", conf_threshold);
 
-		// Load files and labels from the cache
-		let train_files = load_speaker_labels(TRAIN_FILE_LIST);
-		let target_files = load_speaker_labels(TARGET_FILE_LIST);
+		let train_files = load_train_files(TRAIN_FILE_LIST);
+		let target_files_raw = load_target_files(TARGET_FILE_LIST);
+		let target_files: Vec<(String, Option<usize>)> = target_files_raw
+			.into_iter()
+			.map(|(p, c)| (p, Some(c)))
+			.collect();
 
-		// Make sure model matches number of classes
 		let num_classes = count_speakers(&train_files).max(1);
 		let mut net = SimpleNeuralNet::new(FEATURE_SIZE, 512, 256, num_classes);
-		if Path::new("model.npz").exists() {
-			println!("Loading model from model.npz");
-			net.load("model.npz");
+		if Path::new(MODEL_PATH).exists() {
+			println!("Loading model from {}", MODEL_PATH);
+			net.load(MODEL_PATH);
 		} else {
-			eprintln!("Model file model.npz not found. Please train first.");
+			eprintln!("Model file {} not found. Please train first.", MODEL_PATH);
 			return;
 		}
 
-		// Load embeddings from training set
 		let train_embeddings = get_embeddings_from_features(&train_files, &feature_map, &net);
-		let mut speaker_embeddings = SpeakerEmbeddings::from_embeddings(train_embeddings);
+		let mut speaker_embeddings = HashMap::new();
+		for (id, embed) in train_embeddings {
+			speaker_embeddings.insert(id, embed);
+		}
 
-		// Evaluation loop
 		let mut true_positive = 0;
 		let mut false_positive = 0;
 		let mut false_negative = 0;
@@ -443,7 +445,8 @@ fn main() {
 
 		for (path, true_class) in target_files.iter().filter_map(|(p, c)| c.map(|c| (p.clone(), c))) {
 			if let Some(windows) = feature_map.get(&path) {
-				let predicted = identify_speaker_with_threshold_feats(windows, &net, &speaker_embeddings, threshold);
+				let embedding = extract_embedding_from_features(&net, windows);
+				let predicted = identify_speaker_from_embedding(&embedding, &speaker_embeddings, conf_threshold);
 				match predicted {
 					Some(predicted_class) if predicted_class == true_class => {
 						correct += 1;
@@ -459,7 +462,6 @@ fn main() {
 			}
 		}
 
-		let total = true_positive + false_positive + false_negative;
 		let accuracy = correct as f32 / target_files.len().max(1) as f32;
 		let precision = true_positive as f32 / (true_positive + false_positive).max(1) as f32;
 		let recall = true_positive as f32 / (true_positive + false_negative).max(1) as f32;
