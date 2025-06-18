@@ -1429,3 +1429,25 @@ pub fn identify_speaker_cosine_feats(
     }
     best_idx
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn weights_change_after_training() {
+        // small network for testing
+        let mut net = SimpleNeuralNet::new(4, 3, 2, 2);
+        let w1_before = net.w1.clone();
+        let w2_before = net.w2.clone();
+        let b1_before = net.b1.clone();
+        let b2_before = net.b2.clone();
+
+        let batch = vec![vec![0.1, -0.2, 0.3, 0.4]];
+        let target = vec![1.0, 0.0];
+        net.train_batch(&batch, &target, 0.1);
+
+        assert!(net.w1 != w1_before || net.w2 != w2_before || net.b1 != b1_before || net.b2 != b2_before,
+                "weights did not change after training step");
+    }
+}
