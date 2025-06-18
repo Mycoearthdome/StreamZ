@@ -917,6 +917,13 @@ impl SimpleNeuralNet {
         self.b1 -= &(grad_b1 * scale);
     }
     
+    fn relu<A>(x: &ndarray::ArrayBase<A, ndarray::Ix1>) -> ndarray::Array1<f32>
+	where
+		A: ndarray::Data<Elem = f32>,
+	{
+		x.mapv(|v| v.max(0.0))
+	}
+    
     pub fn forward_embedding(&self, input: &[f32]) -> Vec<f32> {
 		let h1 = relu(&(self.w1.dot(&ndarray::arr1(input)) + &self.b1));
 		let h2 = relu(&(self.w2.dot(&h1) + &self.b2));
