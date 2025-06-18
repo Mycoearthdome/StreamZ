@@ -257,25 +257,29 @@ fn print_embedding_quality(net: &SimpleNeuralNet, extractor: &FeatureExtractor) 
     }
 }
 
-fn normalize_eval_labels(
-    files: &[(String, Option<usize>)],
-    label_map: &mut std::collections::HashMap<usize, usize>,
-) -> Vec<(String, usize)> {
-    let mut next_id = label_map.len();
-    let mut result = Vec::new();
-
-    for (path, label_opt) in files {
-        if let Some(label) = label_opt {
-            let id = *label_map.entry(*label).or_insert_with(|| {
-                let id = next_id;
-                next_id += 1;
-                id
-            });
-            result.push((path.clone(), id));
+fn build_label_map(
+    train: &[(String, Option<usize>)],
+    eval: &[(String, Option<usize>)],
+) -> std::collections::HashMap<usize, usize> {
+    let mut labels: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for (_, l) in train.iter().chain(eval.iter()) {
+        if let Some(v) = l {
+            labels.insert(*v);
         }
     }
+    let mut vec: Vec<_> = labels.into_iter().collect();
+    vec.sort_unstable();
+    vec.into_iter().enumerate().map(|(i, v)| (v, i)).collect()
+}
 
-    result
+fn normalize_with_map(
+    files: &[(String, Option<usize>)],
+    label_map: &std::collections::HashMap<usize, usize>,
+) -> Vec<(String, usize)> {
+    files
+        .iter()
+        .filter_map(|(p, l)| l.and_then(|lab| label_map.get(&lab).map(|id| (p.clone(), *id))))
+        .collect()
 }
 
 fn main() {
@@ -409,8 +413,12 @@ fn main() {
         use rand::seq::SliceRandom;
         use std::collections::HashMap;
         let mut rng = rand::thread_rng();
-        let mut label_map: HashMap<usize, usize> = HashMap::new();
-        let labelled = normalize_eval_labels(&train_files, &mut label_map);
+        let target_opts: Vec<(String, Option<usize>)> = target_files
+            .iter()
+            .map(|(p, c)| (p.clone(), Some(*c)))
+            .collect();
+        let label_map = build_label_map(&train_files, &target_opts);
+        let labelled = normalize_with_map(&train_files, &label_map);
         if labelled.is_empty() {
             eprintln!("No labelled data available for evaluation");
             return;
@@ -418,13 +426,7 @@ fn main() {
         let mut eval_set: Vec<(String, usize)>;
         let mut train_refs_owned: Vec<(String, usize)> = labelled.clone();
         if !target_files.is_empty() {
-            eval_set = normalize_eval_labels(
-                &target_files
-                    .iter()
-                    .map(|(p, c)| (p.clone(), Some(*c)))
-                    .collect::<Vec<_>>(),
-                &mut label_map,
-            );
+            eval_set = normalize_with_map(&target_opts, &label_map);
         } else {
             let mut by_class: HashMap<usize, Vec<String>> = HashMap::new();
             for (path, cls) in labelled {
