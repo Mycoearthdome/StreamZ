@@ -423,6 +423,12 @@ fn main() {
             (path, feats)
         })
         .collect();
+        
+    for (p, _) in &train_files {
+		if !feature_map.contains_key(p) {
+			eprintln!("No features found for training path: {}", p);
+		}
+	}
 
     let dataset_size = train_files.len();
     let burn_in_default = ((dataset_size as f32) * DEFAULT_BURN_IN_FRAC).ceil() as usize;
@@ -458,6 +464,8 @@ fn main() {
 			eprintln!("Model file {} not found. Please train first.", MODEL_PATH);
 			return;
 		};
+		
+		println!("Model contains {} saved embeddings", net.embeddings().len());
 
 		// 🔍 Compute speaker embeddings from training data
 		let train_embeddings = get_embeddings_from_features(
