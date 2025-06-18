@@ -467,21 +467,13 @@ fn main() {
 		
 		println!("Model contains {} saved embeddings", net.embeddings().len());
 
-		// 🔍 Compute speaker embeddings from training data
-		let train_embeddings = get_embeddings_from_features(
-			&train_files
-				.iter()
-				.map(|(p, c)| (p.clone(), Some(*c)))
-				.collect::<Vec<_>>(),
-			&feature_map,
-			&net,
-		);
-		let mut speaker_embeddings = HashMap::new();
-		for (id, embed) in &train_embeddings {
-			let norm = embed.iter().map(|v| v * v).sum::<f32>().sqrt();
-			eprintln!("Speaker ID {} embedding norm: {:.4}", id, norm);
-			speaker_embeddings.insert(*id, embed.clone());
-		}
+		// 🔍 get speaker embeddings from training data
+		let speaker_embeddings: HashMap<usize, Vec<f32>> = net
+		.embeddings()
+		.iter()
+		.enumerate()
+		.map(|(i, (embed, _, _))| (i, embed.clone()))
+		.collect();
 
 		eprintln!(
 			"Total speaker embeddings available: {}",
