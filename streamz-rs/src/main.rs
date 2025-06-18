@@ -233,7 +233,10 @@ fn print_embedding_quality(net: &SimpleNeuralNet, extractor: &FeatureExtractor) 
                 i, mean_sim, std_sim
             );
         }
-        println!("Average mean similarity: {:.4}", sum / net.embeddings().len() as f32);
+        println!(
+            "Average mean similarity: {:.4}",
+            sum / net.embeddings().len() as f32
+        );
         return;
     }
 
@@ -500,6 +503,12 @@ fn main() {
                 Err(_) => panic!("Arc has other references"),
             }
         };
+        if net.output_size() <= 1 {
+            eprintln!(
+                "Model has less than two speakers; evaluation requires at least two classes."
+            );
+            return;
+        }
         let eval_set: Vec<(String, usize)> = eval_set
             .into_iter()
             .filter(|(p, _)| feature_map.contains_key(p))
