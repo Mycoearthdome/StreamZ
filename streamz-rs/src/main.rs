@@ -790,11 +790,4 @@ fn main() {
         let count = feat_map.get(&i).map_or(0, |v| v.len());
         println!("Speaker {}: {} samples", i, count);
     }
-
-    
-
-	// Must save AFTER embeddings are set
-	if let Err(e) = net.save(MODEL_PATH) {
-		eprintln!("Failed to save model: {}", e);
-	}
 }
