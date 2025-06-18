@@ -1249,7 +1249,7 @@ pub fn extract_embedding(
     }
 
     normalize(&mut emb);
-    embfor
+    emb
 }
 
 /// Compute an embedding from precomputed feature windows.
