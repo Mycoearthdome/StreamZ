@@ -740,11 +740,14 @@ fn main() {
     };
     
     let new_embeddings = compute_speaker_embeddings(&net, &extractor).unwrap_or_default();
-	println!(
-		"Final embeddings to save: {} for {} speakers",
-		new_embeddings.len(),
-		net.output_size()
-	);
+	for (i, (embed, mean, std)) in new_embeddings.iter().enumerate() {
+		let norm = embed.iter().map(|x| x * x).sum::<f32>().sqrt();
+		println!(
+			"Saving Speaker {} → mean_sim: {:.4}, std_sim: {:.4}, norm: {:.4}",
+			i, mean, std, norm
+		);
+	}
+	
 	net.set_embeddings(new_embeddings);
 
 	if let Err(e) = net.save(MODEL_PATH) {
