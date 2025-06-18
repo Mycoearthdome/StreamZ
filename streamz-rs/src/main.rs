@@ -416,12 +416,10 @@ fn main() {
         use rand::seq::SliceRandom;
         use std::collections::HashMap;
         let mut rng = rand::thread_rng();
-        let target_opts: Vec<(String, Option<usize>)> = target_files
+        let labelled: Vec<(String, usize)> = train_files
             .iter()
-            .map(|(p, c)| (p.clone(), Some(*c)))
+            .filter_map(|(p, c)| c.map(|cls| (p.clone(), cls)))
             .collect();
-        let label_map = build_label_map(&train_files, &target_opts);
-        let labelled = normalize_with_map(&train_files, &label_map);
         if labelled.is_empty() {
             eprintln!("No labelled data available for evaluation");
             return;
@@ -429,7 +427,7 @@ fn main() {
         let mut eval_set: Vec<(String, usize)>;
         let mut train_refs_owned: Vec<(String, usize)> = labelled.clone();
         if !target_files.is_empty() {
-            eval_set = normalize_with_map(&target_opts, &label_map);
+            eval_set = target_files.clone();
         } else {
             let mut by_class: HashMap<usize, Vec<String>> = HashMap::new();
             for (path, cls) in labelled {
