@@ -741,7 +741,7 @@ fn main() {
     pb_arc.finish_and_clear();
     let final_loss = *total_loss.lock().unwrap();
     let count = loss_count.load(Ordering::SeqCst);
-    let net = match Arc::try_unwrap(net_arc) {
+    let mut net = match Arc::try_unwrap(net_arc) {
         Ok(m) => m.into_inner().unwrap(),
         Err(_) => panic!("Arc has other references"),
     };
