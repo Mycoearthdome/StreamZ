@@ -418,7 +418,7 @@ fn main() {
 
 		// Load files and labels from the cache
 		let train_files = load_speaker_labels(TRAIN_FILE_LIST);
-		let target_files = load_speaker_labels(TARGET_FILE_LIST;
+		let target_files = load_speaker_labels(TARGET_FILE_LIST);
 
 		// Make sure model matches number of classes
 		let num_classes = count_speakers(&train_files).max(1);
