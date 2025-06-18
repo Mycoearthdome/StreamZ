@@ -470,17 +470,17 @@ fn main() {
 			speaker_embeddings.insert(id, embed);
 		}
 
+		let mut correct = 0;
 		let mut true_positive = 0;
 		let mut false_positive = 0;
 		let mut false_negative = 0;
-		let mut correct = 0;
 
-		for (path, true_class) in target_files {
-			if let Some(windows) = feature_map.get(&path) {
+		for (path, true_class) in &target_files {
+			if let Some(windows) = feature_map.get(path) {
 				let embedding = extract_embedding_from_features(&net, windows);
 				let predicted =
 					identify_speaker_from_embedding(&embedding, &speaker_embeddings, conf_threshold);
-				if predicted == true_class {
+				if predicted == *true_class {
 					correct += 1;
 					true_positive += 1;
 				} else if predicted == usize::MAX {
@@ -496,7 +496,7 @@ fn main() {
 			}
 		}
 
-		let total = target_files.clone().len().max(1) as f32;
+		let total = target_files.len().max(1) as f32;
 		let accuracy = correct as f32 / total;
 		let precision = true_positive as f32 / (true_positive + false_positive).max(1) as f32;
 		let recall = true_positive as f32 / (true_positive + false_negative).max(1) as f32;
