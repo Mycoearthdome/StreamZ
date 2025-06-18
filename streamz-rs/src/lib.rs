@@ -918,7 +918,6 @@ impl SimpleNeuralNet {
     }
     
     pub fn forward_embedding(&self, input: &[f32]) -> Vec<f32> {
-        use ndarray::{Array1, Array2};
 
         // Convert input to ndarray
         let x = Array1::from_vec(input.to_vec());
