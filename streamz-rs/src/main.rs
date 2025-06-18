@@ -548,7 +548,7 @@ fn main() {
 
 
     let mut num_speakers = count_speakers(&train_files);
-    let net = if Path::new(MODEL_PATH).exists() {
+	let net = if Path::new(MODEL_PATH).exists() {
         match SimpleNeuralNet::load(MODEL_PATH) {
             Ok(mut n) => {
                 println!("Loaded saved model from {}", MODEL_PATH);
@@ -564,9 +564,10 @@ fn main() {
         }
     } else {
         if num_speakers == 0 {
-            num_speakers = 1;
-            train_files[0].1 = Some(0);
-        }
+			num_speakers = 1;
+			train_files[0].1 = Some(0);
+			println!("No labeled speakers found — assigned speaker 0 to first file.");
+		}
         let net_arc = Arc::new(RwLock::new(SimpleNeuralNet::new(
             FEATURE_SIZE,
             512,
