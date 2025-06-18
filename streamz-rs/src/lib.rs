@@ -918,21 +918,11 @@ impl SimpleNeuralNet {
     }
     
     pub fn forward_embedding(&self, input: &[f32]) -> Vec<f32> {
+		let h1 = relu(&(self.w1.dot(&ndarray::arr1(input)) + &self.b1));
+		let h2 = relu(&(self.w2.dot(&h1) + &self.b2));
+		h2.to_vec()
+	}
 
-        // Convert input to ndarray
-        let x = Array1::from_vec(input.to_vec());
-
-        // Input to hidden layer 1
-        let mut h1 = x.dot(&self.w1) + &self.b1;
-        h1.mapv_inplace(|v| v.max(0.0)); // ReLU
-
-        // Hidden layer 1 to hidden layer 2
-        let mut h2 = h1.dot(&self.w2) + &self.b2;
-        h2.mapv_inplace(|v| v.max(0.0)); // ReLU
-
-        // This is the embedding — before the output layer
-        h2.to_vec()
-    }
 
     pub fn save(&self, path: &str) -> Result<(), Box<dyn Error>> {
         let file = File::create(path)?;
@@ -1254,20 +1244,17 @@ pub fn extract_embedding(
 /// Compute an embedding from precomputed feature windows.
 pub fn extract_embedding_from_features(net: &SimpleNeuralNet, feats: &[Vec<f32>]) -> Vec<f32> {
     let mut acc = vec![0.0; net.embedding_size()];
-    let mut count = 0;
-    for window in feats {
-        let out = net.forward_embedding(window);
-        for (i, v) in out.iter().enumerate() {
-            acc[i] += *v;
-        }
-        count += 1;
-    }
-    if count > 0 {
-        for v in &mut acc {
-            *v /= count as f32;
+    for f in feats {
+        let out = net.forward_embedding(f);
+        for (i, val) in out.iter().enumerate() {
+            acc[i] += *val;
         }
     }
-    normalize(&mut acc); // <- keep normalization for cosine similarity
+    let count = feats.len().max(1) as f32;
+    for v in &mut acc {
+        *v /= count;
+    }
+    normalize(&mut acc);
     acc
 }
 
