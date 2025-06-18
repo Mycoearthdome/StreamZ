@@ -673,12 +673,9 @@ fn main() {
                     let speaker_id = if burn_phase && class.is_none() {
                         // Prevent race by locking only when assigning
                         let mut net_w = net_arc.write().unwrap();
-                        if net_w.file_lists.len() <= speaker_id {
-							net_w.file_lists.resize(speaker_id + 1, Vec::new());
-						}
-						net_w.file_lists[speaker_id].push(path.clone());
                         let new_label = net_w.output_size();
                         net_w.add_output_class();
+                        net_w.record_training_file(new_label, path);
                         *class = Some(new_label);
                         new_label
                     } else if let Some(label) = *class {
@@ -695,6 +692,12 @@ fn main() {
                         *class = Some(matched);
                         matched
                     };
+
+                    // Record the file for this speaker
+                    {
+                        let mut net_w = net_arc.write().unwrap();
+                        net_w.record_training_file(speaker_id, path);
+                    }
 
                     // Clone network for local training
                     let mut net_local = { net_arc.read().unwrap().clone() };
