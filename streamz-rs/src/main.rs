@@ -434,12 +434,13 @@ fn main() {
 
 		let train_files_raw = load_train_files(TRAIN_FILE_LIST);
 		let target_files_raw = load_target_files(TARGET_FILE_LIST);
+
 		let target_files_opt: Vec<(String, Option<usize>)> = target_files_raw
 			.iter()
 			.map(|(p, c)| (p.clone(), Some(*c)))
 			.collect();
 
-		// 🔧 Normalize labels to align speaker indices across train/eval
+		// 🔧 Normalize class labels
 		let label_map = build_label_map(&train_files_raw, &target_files_opt);
 		let train_files = normalize_with_map(&train_files_raw, &label_map);
 		let target_files = normalize_with_map(&target_files_opt, &label_map);
@@ -458,41 +459,68 @@ fn main() {
 			return;
 		};
 
-		let train_embeddings = get_embeddings_from_features(&train_files
-        .iter()
-        .map(|(p, c)| (p.clone(), Some(*c)))
-        .collect::<Vec<_>>(),
-		&feature_map,
-		&net,
+		// 🔍 Compute speaker embeddings from training data
+		let train_embeddings = get_embeddings_from_features(
+			&train_files
+				.iter()
+				.map(|(p, c)| (p.clone(), Some(*c)))
+				.collect::<Vec<_>>(),
+			&feature_map,
+			&net,
 		);
 		let mut speaker_embeddings = HashMap::new();
-		for (id, embed) in train_embeddings {
-			speaker_embeddings.insert(id, embed);
+		for (id, embed) in &train_embeddings {
+			let norm = embed.iter().map(|v| v * v).sum::<f32>().sqrt();
+			eprintln!("Speaker ID {} embedding norm: {:.4}", id, norm);
+			speaker_embeddings.insert(*id, embed.clone());
 		}
 
-		let mut correct = 0;
+		eprintln!(
+			"Total speaker embeddings available: {}",
+			speaker_embeddings.len()
+		);
+
 		let mut true_positive = 0;
 		let mut false_positive = 0;
 		let mut false_negative = 0;
+		let mut correct = 0;
 
 		for (path, true_class) in &target_files {
 			if let Some(windows) = feature_map.get(path) {
 				let embedding = extract_embedding_from_features(&net, windows);
-				let predicted =
-					identify_speaker_from_embedding(&embedding, &speaker_embeddings, conf_threshold);
-				if predicted == *true_class {
+				let emb_norm = embedding.iter().map(|v| v * v).sum::<f32>().sqrt();
+				eprintln!(
+					"\nEvaluating file: {}\nTrue class: {}\nEmbedding norm: {:.4}",
+					path, true_class, emb_norm
+				);
+
+				let mut best_id = usize::MAX;
+				let mut best_sim = f32::MIN;
+
+				for (&id, centroid) in &speaker_embeddings {
+					let sim = cosine_similarity(&embedding, centroid);
+					eprintln!("  → Similarity to speaker {}: {:.4}", id, sim);
+					if sim > conf_threshold && sim > best_sim {
+						best_sim = sim;
+						best_id = id;
+					}
+				}
+
+				if best_id == *true_class {
 					correct += 1;
 					true_positive += 1;
-				} else if predicted == usize::MAX {
+				} else if best_id == usize::MAX {
 					false_negative += 1;
-					eprintln!("Unclassified: {} (true class: {})", path, true_class);
+					eprintln!("  → Unclassified");
 				} else {
 					false_positive += 1;
 					eprintln!(
-						"Misclassified: {} (true: {}, predicted: {})",
-						path, true_class, predicted
+						"  → Misclassified: predicted speaker {}, true speaker {}",
+						best_id, true_class
 					);
 				}
+			} else {
+				eprintln!("⚠️ No features found for {}", path);
 			}
 		}
 
@@ -502,7 +530,7 @@ fn main() {
 		let recall = true_positive as f32 / (true_positive + false_negative).max(1) as f32;
 		let f1_score = 2.0 * precision * recall / (precision + recall).max(1e-6);
 
-		println!("Evaluation complete:");
+		println!("\nEvaluation complete:");
 		println!("  Accuracy:  {:.2}%", 100.0 * accuracy);
 		println!("  Precision: {:.2}%", 100.0 * precision);
 		println!("  Recall:    {:.2}%", 100.0 * recall);
