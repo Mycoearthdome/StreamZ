@@ -15,6 +15,7 @@ use streamz_rs::{
     identify_speaker_from_embedding, load_and_resample_file,
     pretrain_from_features, set_wav_cache_enabled, train_from_files, with_thread_extractor,
     FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE, cosine_similarity,
+    normalize,
 };
 
 const MODEL_PATH: &str = "model.npz";
@@ -295,7 +296,8 @@ fn get_embeddings_from_features(
     let mut map: HashMap<usize, Vec<Vec<f32>>> = HashMap::new();
     for (path, label) in files {
         if let (Some(l), Some(feats)) = (label, feature_map.get(path)) {
-            let emb = extract_embedding_from_features(net, feats);
+            let mut emb = extract_embedding_from_features(net, feats);
+            normalize(&mut emb);
             map.entry(*l).or_default().push(emb);
         }
     }
@@ -488,9 +490,10 @@ fn main() {
 		let mut correct = 0;
 
 		for (path, true_class) in &target_files {
-			if let Some(windows) = feature_map.get(path) {
-				let embedding = extract_embedding_from_features(&net, windows);
-				let emb_norm = embedding.iter().map(|v| v * v).sum::<f32>().sqrt();
+                        if let Some(windows) = feature_map.get(path) {
+                                let mut embedding = extract_embedding_from_features(&net, windows);
+                                normalize(&mut embedding);
+                                let emb_norm = embedding.iter().map(|v| v * v).sum::<f32>().sqrt();
 				eprintln!(
 					"\nEvaluating file: {}\nTrue class: {}\nEmbedding norm: {:.4}",
 					path, true_class, emb_norm
@@ -658,10 +661,11 @@ fn main() {
                     }
 
                     // Only now extract embedding
-                    let emb = {
+                    let mut emb = {
                         let guard = net_arc.read().unwrap();
                         extract_embedding_from_features(&guard, windows)
                     };
+                    normalize(&mut emb);
 
                     let count = loss_count.load(Ordering::SeqCst);
                     let burn_phase = count < burn_in_limit_val;

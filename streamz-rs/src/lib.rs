@@ -929,11 +929,12 @@ impl SimpleNeuralNet {
 	}
     
     pub fn forward_embedding(&self, input: &[f32]) -> Vec<f32> {
-		let input_vec = ndarray::Array1::from_vec(input.to_vec());
-		let h1 = Self::relu(&(input_vec.dot(&self.w1) + &self.b1));
-		let h2 = h1.dot(&self.w2) + &self.b2; // No activation
-		h2.to_vec()
-	}
+        let h1 = Self::relu(&(self.w1.dot(&ndarray::arr1(input)) + &self.b1));
+        let h2 = Self::relu(&(self.w2.dot(&h1) + &self.b2));
+        let mut vec = h2.to_vec();
+        normalize(&mut vec);
+        vec
+    }
 
 
 
@@ -1332,7 +1333,8 @@ pub fn compute_speaker_embeddings(
         let mut embeds = Vec::new();
         for path in files {
             if let Ok(wins) = load_cached_features(path, extractor) {
-                let emb = extract_embedding_from_features(net, &wins);
+                let mut emb = extract_embedding_from_features(net, &wins);
+                normalize(&mut emb);
                 embeds.push(emb);
             }
         }
@@ -1414,7 +1416,8 @@ pub fn identify_speaker_cosine_feats(
     if speaker_embeds.is_empty() {
         return None;
     }
-    let emb = extract_embedding_from_features(net, windows);
+    let mut emb = extract_embedding_from_features(net, windows);
+    normalize(&mut emb);
     let mut best_idx = None;
     let mut best_val = threshold;
     for (i, (mean, mean_sim, std_sim)) in speaker_embeds.iter().enumerate() {
