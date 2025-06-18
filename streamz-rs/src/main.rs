@@ -35,6 +35,8 @@ const DROPOUT_PROB: f32 = streamz_rs::DEFAULT_DROPOUT;
 /// Number of feature windows per training batch.
 const BATCH_SIZE: usize = 8;
 
+
+
 fn load_train_files(path: &str) -> Vec<(String, Option<usize>)> {
     if let Ok(content) = fs::read_to_string(path) {
         let mut files = Vec::new();

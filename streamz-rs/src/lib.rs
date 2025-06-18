@@ -100,12 +100,12 @@ fn apply_dropout(features: &mut [f32], prob: f32) {
 }
 
 /// Normalize a vector to unit length using the L2 norm
-fn normalize(v: &mut [f32]) {
-    let view = ndarray::aview1(v);
-    let norm = view.into_par_iter().map(|&x| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        let mut view_mut = ndarray::aview_mut1(v);
-        view_mut.par_mapv_inplace(|x| x / norm);
+pub fn normalize(v: &mut [f32]) {
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 1e-6 {
+        for val in v.iter_mut() {
+            *val /= norm;
+        }
     }
 }
 
@@ -1258,6 +1258,7 @@ pub fn extract_embedding(
 pub fn extract_embedding_from_features(net: &SimpleNeuralNet, feats: &[Vec<f32>]) -> Vec<f32> {
     let mut acc = vec![0.0; net.embedding_size()];
     let mut count = 0;
+
     for window in feats {
         let out = net.forward_embedding(window);
         for (i, v) in out.iter().enumerate() {
@@ -1265,11 +1266,15 @@ pub fn extract_embedding_from_features(net: &SimpleNeuralNet, feats: &[Vec<f32>]
         }
         count += 1;
     }
+
     if count > 0 {
         for v in &mut acc {
             *v /= count as f32;
         }
     }
+
+    // Normalize the final embedding to unit norm
+    normalize(&mut acc);
     acc
 }
 
