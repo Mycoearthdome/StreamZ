@@ -12,9 +12,9 @@ use std::sync::{
 };
 use streamz_rs::{
     average_vectors, batch_resample, compute_speaker_embeddings, extract_embedding_from_features,
-    identify_speaker_from_embedding, identify_speaker_with_threshold_feats, load_and_resample_file,
+    identify_speaker_from_embedding, load_and_resample_file,
     pretrain_from_features, set_wav_cache_enabled, train_from_files, with_thread_extractor,
-    FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
+    FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE, cosine_similarity,
 };
 
 const MODEL_PATH: &str = "model.npz";
