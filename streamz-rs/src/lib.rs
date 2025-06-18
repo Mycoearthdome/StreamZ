@@ -923,11 +923,11 @@ impl SimpleNeuralNet {
         let x = Array1::from_vec(input.to_vec());
 
         // Input to hidden layer 1
-        let mut h1 = self.w1.dot(&x) + &self.b1;
+        let mut h1 = x.dot(&self.w1) + &self.b1;
         h1.mapv_inplace(|v| v.max(0.0)); // ReLU
 
         // Hidden layer 1 to hidden layer 2
-        let mut h2 = self.w2.dot(&h1) + &self.b2;
+        let mut h2 = h1.dot(&self.w2) + &self.b2;
         h2.mapv_inplace(|v| v.max(0.0)); // ReLU
 
         // This is the embedding — before the output layer
