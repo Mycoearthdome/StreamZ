@@ -969,7 +969,7 @@ impl SimpleNeuralNet {
         let w2: Array2<f32> = npz.by_name("w2")?;
         let b2: Array1<f32> = npz.by_name("b2")?;
         let num_speakers_arr: Option<ndarray::Array1<i64>> =
-            if names.iter().any(|n| n == "num_speakers.npy") {
+            if names.iter().any(|n| n == "num_speakers") {
                 Some(npz.by_name("num_speakers")?)
             } else {
                 None
@@ -981,8 +981,8 @@ impl SimpleNeuralNet {
         loop {
             let w_name = format!("w3_{}", idx);
             let b_name = format!("b3_{}", idx);
-            let entry_w = format!("{}.npy", w_name);
-            let entry_b = format!("{}.npy", b_name);
+            let entry_w = format!("{}", w_name);
+            let entry_b = format!("{}", b_name);
             if names.iter().any(|n| n == &entry_w) && names.iter().any(|n| n == &entry_b) {
                 let w_col: Array1<f32> = npz.by_name(&w_name)?;
                 let b_val: Array1<f32> = npz.by_name(&b_name)?;
@@ -1005,7 +1005,7 @@ impl SimpleNeuralNet {
             for (i, val) in biases.into_iter().enumerate() {
                 b3[i] = val;
             }
-        } else if names.iter().any(|n| n == "w3.npy") {
+        } else if names.iter().any(|n| n == "w3") {
             let w3_raw: Array2<f32> = npz.by_name("w3")?;
             let b3_raw: Array1<f32> = npz.by_name("b3")?;
             num_outputs = b3_raw.len();
@@ -1041,7 +1041,7 @@ impl SimpleNeuralNet {
         }
 
         let mut embeddings = Vec::new();
-        if names.iter().any(|n| n == "speaker_embeddings.npy") {
+        if names.iter().any(|n| n == "speaker_embeddings") {
             let embeds_arr: Array2<f32> = npz.by_name("speaker_embeddings")?;
             let mean_arr: Array1<f32> = npz.by_name("speaker_mean_sims")?;
             let std_arr: Array1<f32> = npz.by_name("speaker_std_sims")?;
