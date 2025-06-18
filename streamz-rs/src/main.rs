@@ -496,7 +496,7 @@ fn main() {
 			}
 		}
 
-		let total = target_files.len().max(1) as f32;
+		let total = target_files.clone().len().max(1) as f32;
 		let accuracy = correct as f32 / total;
 		let precision = true_positive as f32 / (true_positive + false_positive).max(1) as f32;
 		let recall = true_positive as f32 / (true_positive + false_negative).max(1) as f32;
