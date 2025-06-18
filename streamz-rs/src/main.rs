@@ -285,6 +285,23 @@ fn normalize_with_map(
         .collect()
 }
 
+fn get_embeddings_from_features(
+    files: &[(String, Option<usize>)],
+    feature_map: &HashMap<String, Vec<Vec<f32>>>,
+    net: &SimpleNeuralNet,
+) -> Vec<(usize, Vec<f32>)> {
+    let mut map: HashMap<usize, Vec<Vec<f32>>> = HashMap::new();
+    for (path, label) in files {
+        if let (Some(l), Some(feats)) = (label, feature_map.get(path)) {
+            let emb = extract_embedding_from_features(net, feats);
+            map.entry(*l).or_default().push(emb);
+        }
+    }
+    map.into_iter()
+        .map(|(id, embeds)| (id, average_vectors(&embeds)))
+        .collect()
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     std::thread::spawn(|| loop {
@@ -423,14 +440,19 @@ fn main() {
 			.collect();
 
 		let num_classes = count_speakers(&train_files).max(1);
-		let mut net = SimpleNeuralNet::new(FEATURE_SIZE, 512, 256, num_classes);
-		if Path::new(MODEL_PATH).exists() {
-			println!("Loading model from {}", MODEL_PATH);
-			net.load(MODEL_PATH);
-		} else {
-			eprintln!("Model file {} not found. Please train first.", MODEL_PATH);
-			return;
-		}
+                let mut net = if Path::new(MODEL_PATH).exists() {
+                        println!("Loading model from {}", MODEL_PATH);
+                        match SimpleNeuralNet::load(MODEL_PATH) {
+                            Ok(n) => n,
+                            Err(e) => {
+                                eprintln!("Failed to load model: {}", e);
+                                return;
+                            }
+                        }
+                } else {
+                        eprintln!("Model file {} not found. Please train first.", MODEL_PATH);
+                        return;
+                };
 
 		let train_embeddings = get_embeddings_from_features(&train_files, &feature_map, &net);
 		let mut speaker_embeddings = HashMap::new();
@@ -443,24 +465,20 @@ fn main() {
 		let mut false_negative = 0;
 		let mut correct = 0;
 
-		for (path, true_class) in target_files.iter().filter_map(|(p, c)| c.map(|c| (p.clone(), c))) {
-			if let Some(windows) = feature_map.get(&path) {
-				let embedding = extract_embedding_from_features(&net, windows);
-				let predicted = identify_speaker_from_embedding(&embedding, &speaker_embeddings, conf_threshold);
-				match predicted {
-					Some(predicted_class) if predicted_class == true_class => {
-						correct += 1;
-						true_positive += 1;
-					}
-					Some(_) => {
-						false_positive += 1;
-					}
-					None => {
-						false_negative += 1;
-					}
-				}
-			}
-		}
+                for (path, true_class) in target_files.iter().filter_map(|(p, c)| c.map(|c| (p.clone(), c))) {
+                        if let Some(windows) = feature_map.get(&path) {
+                                let embedding = extract_embedding_from_features(&net, windows);
+                                let predicted = identify_speaker_from_embedding(&embedding, &speaker_embeddings, conf_threshold);
+                                if predicted == true_class {
+                                        correct += 1;
+                                        true_positive += 1;
+                                } else if predicted == usize::MAX {
+                                        false_negative += 1;
+                                } else {
+                                        false_positive += 1;
+                                }
+                        }
+                }
 
 		let accuracy = correct as f32 / target_files.len().max(1) as f32;
 		let precision = true_positive as f32 / (true_positive + false_positive).max(1) as f32;
