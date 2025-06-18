@@ -293,7 +293,7 @@ fn main() {
         if deadlocks.is_empty() {
             continue;
         }
-        eprintln!("⚠️ Detected {} deadlocks!", deadlocks.len());
+        eprintln!("Detected {} deadlocks!", deadlocks.len());
         for (i, threads) in deadlocks.iter().enumerate() {
             eprintln!("Deadlock #{}", i);
             for t in threads {
@@ -413,176 +413,66 @@ fn main() {
     let _max_speakers = max_speakers.unwrap_or_else(|| count_speakers(&train_files) + 10);
 
     if eval_mode {
-        use rand::seq::SliceRandom;
-        use std::collections::HashMap;
-        let mut rng = rand::thread_rng();
-        let labelled: Vec<(String, usize)> = train_files
-            .iter()
-            .filter_map(|(p, c)| c.map(|cls| (p.clone(), cls)))
-            .collect();
-        if labelled.is_empty() {
-            eprintln!("No labelled data available for evaluation");
-            return;
-        }
-        let mut eval_set: Vec<(String, usize)>;
-        let mut train_refs_owned: Vec<(String, usize)> = labelled.clone();
-        if !target_files.is_empty() {
-            eval_set = target_files.clone();
-        } else {
-            let mut by_class: HashMap<usize, Vec<String>> = HashMap::new();
-            for (path, cls) in labelled {
-                by_class.entry(cls).or_default().push(path);
-            }
-            eval_set = Vec::new();
-            train_refs_owned.clear();
-            for (cls, mut paths) in by_class {
-                paths.shuffle(&mut rng);
-                let split_count = (paths.len() as f32 * eval_split).ceil() as usize;
-                let eval_part: Vec<(String, usize)> = paths
-                    .split_off(paths.len().saturating_sub(split_count))
-                    .into_iter()
-                    .map(|p| (p, cls))
-                    .collect();
-                let train_part: Vec<(String, usize)> =
-                    paths.into_iter().map(|p| (p, cls)).collect();
-                eval_set.extend(eval_part);
-                train_refs_owned.extend(train_part);
-            }
-        }
-        let train_refs: Vec<(&str, usize)> = train_refs_owned
-            .iter()
-            .map(|(p, c)| (p.as_str(), *c))
-            .collect();
-        let net = if Path::new(MODEL_PATH).exists() && !force_retrain {
-            match SimpleNeuralNet::load(MODEL_PATH) {
-                Ok(mut n) => {
-                    println!("Loaded model for evaluation");
-                    let new_embeddings =
-                        compute_speaker_embeddings(&n, &extractor).unwrap_or_else(|| vec![]);
-                    n.set_embeddings(new_embeddings);
-                    n
-                }
-                Err(e) => {
-                    eprintln!("Failed to load saved model: {}", e);
-                    SimpleNeuralNet::new(
-                        FEATURE_SIZE,
-                        512,
-                        256,
-                        count_speakers(&train_files).max(1),
-                    )
-                }
-            }
-        } else {
-            let net_arc = Arc::new(RwLock::new(SimpleNeuralNet::new(
-                FEATURE_SIZE,
-                512,
-                256,
-                count_speakers(&train_files).max(1),
-            )));
-            if !train_refs.is_empty() {
-                let out_sz = {
-                    let guard = net_arc.read().unwrap();
-                    guard.output_size()
-                };
-                let _ = train_from_files(
-                    net_arc.clone(),
-                    &train_refs,
-                    train_refs.len(),
-                    out_sz,
-                    TRAIN_EPOCHS,
-                    0.01,
-                    DROPOUT_PROB,
-                    BATCH_SIZE,
-                    &extractor,
-                );
-            }
-            match Arc::try_unwrap(net_arc) {
-                Ok(m) => m.into_inner().unwrap(),
-                Err(_) => panic!("Arc has other references"),
-            }
-        };
-        if net.output_size() <= 1 {
-            eprintln!(
-                "Model has less than two speakers; evaluation requires at least two classes."
-            );
-            return;
-        }
-        let eval_set: Vec<(String, usize)> = eval_set
-            .into_iter()
-            .filter(|(p, _)| feature_map.contains_key(p))
-            .collect();
-        let total = eval_set.len();
-        if total == 0 {
-            eprintln!("No features available for evaluation");
-            return;
-        }
-        let pb = ProgressBar::new(total as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{msg} {bar:40} {pos}/{len} ETA {eta}")
-                .unwrap(),
-        );
-        let correct = AtomicUsize::new(0);
-        let tp = AtomicUsize::new(0);
-        let fp = AtomicUsize::new(0);
-        let fnc = AtomicUsize::new(0);
+		let threshold = config.threshold.unwrap_or(0.8);
+		println!("Evaluating with threshold = {}", threshold);
 
-        eval_set.par_iter().for_each(|(path, class)| {
-            pb.set_message(path.clone());
-            if let Some(wins) = feature_map.get(path) {
-                match identify_speaker_with_threshold_feats(&net, wins, conf_threshold) {
-                    Some(pred) => {
-                        println!("Predicted: {}, Actual: {}", pred, *class);
-                        if pred == *class {
-                            tp.fetch_add(1, Ordering::SeqCst);
-                            correct.fetch_add(1, Ordering::SeqCst);
-                        } else {
-                            fp.fetch_add(1, Ordering::SeqCst);
-                            fnc.fetch_add(1, Ordering::SeqCst);
-                        }
-                    }
-                    None => {
-                        fnc.fetch_add(1, Ordering::SeqCst);
-                    }
-                }
-            }
-            pb.inc(1);
-        });
-        pb.finish_with_message("Evaluation complete");
+		// Load files and labels from the cache
+		let train_files = load_speaker_labels(TRAIN_FILE_LIST);
+		let target_files = load_speaker_labels(TARGET_FILE_LIST;
 
-        let correct = correct.load(Ordering::SeqCst);
-        let tp = tp.load(Ordering::SeqCst);
-        let fp = fp.load(Ordering::SeqCst);
-        let fnc = fnc.load(Ordering::SeqCst);
-        let precision = if tp + fp > 0 {
-            tp as f32 / (tp + fp) as f32
-        } else {
-            0.0
-        };
-        let recall = if tp + fnc > 0 {
-            tp as f32 / (tp + fnc) as f32
-        } else {
-            0.0
-        };
-        let f1 = if precision + recall > 0.0 {
-            2.0 * precision * recall / (precision + recall)
-        } else {
-            0.0
-        };
-        println!(
-            "Eval accuracy: {}/{} ({:.2}%)",
-            correct,
-            total,
-            correct as f32 * 100.0 / total as f32
-        );
-        println!(
-            "Precision: {:.2}% Recall: {:.2}% F1: {:.2}%",
-            precision * 100.0,
-            recall * 100.0,
-            f1 * 100.0
-        );
-        return;
-    }
+		// Make sure model matches number of classes
+		let num_classes = count_speakers(&train_files).max(1);
+		let mut net = SimpleNeuralNet::new(FEATURE_SIZE, 512, 256, num_classes);
+		if Path::new("model.npz").exists() {
+			println!("Loading model from model.npz");
+			net.load("model.npz");
+		} else {
+			eprintln!("Model file model.npz not found. Please train first.");
+			return;
+		}
+
+		// Load embeddings from training set
+		let train_embeddings = get_embeddings_from_features(&train_files, &feature_map, &net);
+		let mut speaker_embeddings = SpeakerEmbeddings::from_embeddings(train_embeddings);
+
+		// Evaluation loop
+		let mut true_positive = 0;
+		let mut false_positive = 0;
+		let mut false_negative = 0;
+		let mut correct = 0;
+
+		for (path, true_class) in target_files.iter().filter_map(|(p, c)| c.map(|c| (p.clone(), c))) {
+			if let Some(windows) = feature_map.get(&path) {
+				let predicted = identify_speaker_with_threshold_feats(windows, &net, &speaker_embeddings, threshold);
+				match predicted {
+					Some(predicted_class) if predicted_class == true_class => {
+						correct += 1;
+						true_positive += 1;
+					}
+					Some(_) => {
+						false_positive += 1;
+					}
+					None => {
+						false_negative += 1;
+					}
+				}
+			}
+		}
+
+		let total = true_positive + false_positive + false_negative;
+		let accuracy = correct as f32 / target_files.len().max(1) as f32;
+		let precision = true_positive as f32 / (true_positive + false_positive).max(1) as f32;
+		let recall = true_positive as f32 / (true_positive + false_negative).max(1) as f32;
+		let f1_score = 2.0 * precision * recall / (precision + recall).max(1e-6);
+
+		println!("Evaluation complete:");
+		println!("  Accuracy:  {:.2}%", 100.0 * accuracy);
+		println!("  Precision: {:.2}%", 100.0 * precision);
+		println!("  Recall:    {:.2}%", 100.0 * recall);
+		println!("  F1-score:  {:.2}%", 100.0 * f1_score);
+		return;
+	}
+
 
     let mut num_speakers = count_speakers(&train_files);
     let net = if Path::new(MODEL_PATH).exists() {
