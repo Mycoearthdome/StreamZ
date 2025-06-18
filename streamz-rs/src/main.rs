@@ -772,10 +772,18 @@ fn main() {
         println!("Speaker {}: {} samples", i, count);
     }
 
-    let new_embeddings = compute_speaker_embeddings(&net, &extractor).unwrap_or_else(|| vec![]);
-    let mut net = net;
-    net.set_embeddings(new_embeddings);
-    if let Err(e) = net.save(MODEL_PATH) {
-        eprintln!("Failed to save model: {}", e);
-    }
+    // net is the trained model
+	let new_embeddings = compute_speaker_embeddings(&net, &extractor).unwrap_or_default();
+	net.set_embeddings(new_embeddings);
+	
+	println!(
+		"Computed {} embeddings for {} speakers",
+		net.embeddings().len(),
+		net.output_size()
+	);
+
+	// Must save AFTER embeddings are set
+	if let Err(e) = net.save(MODEL_PATH) {
+		eprintln!("Failed to save model: {}", e);
+	}
 }
