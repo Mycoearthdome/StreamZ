@@ -458,7 +458,13 @@ fn main() {
 			return;
 		};
 
-		let train_embeddings = get_embeddings_from_features(&train_files, &feature_map, &net);
+		let train_embeddings = get_embeddings_from_features(&train_files
+        .iter()
+        .map(|(p, c)| (p.clone(), Some(*c)))
+        .collect::<Vec<_>>(),
+		&feature_map,
+		&net,
+		);
 		let mut speaker_embeddings = HashMap::new();
 		for (id, embed) in train_embeddings {
 			speaker_embeddings.insert(id, embed);
