@@ -923,11 +923,15 @@ impl SimpleNeuralNet {
 	{
 		x.mapv(|v| v.max(0.0))
 	}
+	
+	fn tanh(x: &Array1<f32>) -> Array1<f32> {
+		x.mapv(|v| v.tanh())
+	}
     
     pub fn forward_embedding(&self, input: &[f32]) -> Vec<f32> {
 		let input_vec = ndarray::Array1::from_vec(input.to_vec());
 		let h1 = Self::relu(&(input_vec.dot(&self.w1) + &self.b1));
-		let h2 = Self::relu(&(h1.dot(&self.w2) + &self.b2));
+		let h2 = Self::tanh(&(h1.dot(&self.w2) + &self.b2));
 		h2.to_vec()
 	}
 
@@ -1253,17 +1257,19 @@ pub fn extract_embedding(
 /// Compute an embedding from precomputed feature windows.
 pub fn extract_embedding_from_features(net: &SimpleNeuralNet, feats: &[Vec<f32>]) -> Vec<f32> {
     let mut acc = vec![0.0; net.embedding_size()];
-    for f in feats {
-        let out = net.forward_embedding(f);
-        for (i, val) in out.iter().enumerate() {
-            acc[i] += *val;
+    let mut count = 0;
+    for window in feats {
+        let out = net.forward_embedding(window);
+        for (i, v) in out.iter().enumerate() {
+            acc[i] += *v;
+        }
+        count += 1;
+    }
+    if count > 0 {
+        for v in &mut acc {
+            *v /= count as f32;
         }
     }
-    let count = feats.len().max(1) as f32;
-    for v in &mut acc {
-        *v /= count;
-    }
-    normalize(&mut acc);
     acc
 }
 
