@@ -432,27 +432,31 @@ fn main() {
     if eval_mode {
 		println!("Evaluating with threshold = {}", conf_threshold);
 
-		let train_files = load_train_files(TRAIN_FILE_LIST);
+		let train_files_raw = load_train_files(TRAIN_FILE_LIST);
 		let target_files_raw = load_target_files(TARGET_FILE_LIST);
-		let target_files: Vec<(String, Option<usize>)> = target_files_raw
-			.into_iter()
-			.map(|(p, c)| (p, Some(c)))
+		let target_files_opt: Vec<(String, Option<usize>)> = target_files_raw
+			.iter()
+			.map(|(p, c)| (p.clone(), Some(*c)))
 			.collect();
 
-		let num_classes = count_speakers(&train_files).max(1);
-                let mut net = if Path::new(MODEL_PATH).exists() {
-                        println!("Loading model from {}", MODEL_PATH);
-                        match SimpleNeuralNet::load(MODEL_PATH) {
-                            Ok(n) => n,
-                            Err(e) => {
-                                eprintln!("Failed to load model: {}", e);
-                                return;
-                            }
-                        }
-                } else {
-                        eprintln!("Model file {} not found. Please train first.", MODEL_PATH);
-                        return;
-                };
+		// 🔧 Normalize labels to align speaker indices across train/eval
+		let label_map = build_label_map(&train_files_raw, &target_files_opt);
+		let train_files = normalize_with_map(&train_files_raw, &label_map);
+		let target_files = normalize_with_map(&target_files_opt, &label_map);
+
+		let mut net = if Path::new(MODEL_PATH).exists() {
+			println!("Loading model from {}", MODEL_PATH);
+			match SimpleNeuralNet::load(MODEL_PATH) {
+				Ok(n) => n,
+				Err(e) => {
+					eprintln!("Failed to load model: {}", e);
+					return;
+				}
+			}
+		} else {
+			eprintln!("Model file {} not found. Please train first.", MODEL_PATH);
+			return;
+		};
 
 		let train_embeddings = get_embeddings_from_features(&train_files, &feature_map, &net);
 		let mut speaker_embeddings = HashMap::new();
@@ -465,22 +469,29 @@ fn main() {
 		let mut false_negative = 0;
 		let mut correct = 0;
 
-                for (path, true_class) in target_files.iter().filter_map(|(p, c)| c.map(|c| (p.clone(), c))) {
-                        if let Some(windows) = feature_map.get(&path) {
-                                let embedding = extract_embedding_from_features(&net, windows);
-                                let predicted = identify_speaker_from_embedding(&embedding, &speaker_embeddings, conf_threshold);
-                                if predicted == true_class {
-                                        correct += 1;
-                                        true_positive += 1;
-                                } else if predicted == usize::MAX {
-                                        false_negative += 1;
-                                } else {
-                                        false_positive += 1;
-                                }
-                        }
-                }
+		for (path, true_class) in target_files {
+			if let Some(windows) = feature_map.get(&path) {
+				let embedding = extract_embedding_from_features(&net, windows);
+				let predicted =
+					identify_speaker_from_embedding(&embedding, &speaker_embeddings, conf_threshold);
+				if predicted == true_class {
+					correct += 1;
+					true_positive += 1;
+				} else if predicted == usize::MAX {
+					false_negative += 1;
+					eprintln!("Unclassified: {} (true class: {})", path, true_class);
+				} else {
+					false_positive += 1;
+					eprintln!(
+						"Misclassified: {} (true: {}, predicted: {})",
+						path, true_class, predicted
+					);
+				}
+			}
+		}
 
-		let accuracy = correct as f32 / target_files.len().max(1) as f32;
+		let total = target_files.len().max(1) as f32;
+		let accuracy = correct as f32 / total;
 		let precision = true_positive as f32 / (true_positive + false_positive).max(1) as f32;
 		let recall = true_positive as f32 / (true_positive + false_negative).max(1) as f32;
 		let f1_score = 2.0 * precision * recall / (precision + recall).max(1e-6);
