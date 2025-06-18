@@ -745,6 +745,25 @@ fn main() {
         Ok(m) => m.into_inner().unwrap(),
         Err(_) => panic!("Arc has other references"),
     };
+    
+    let new_embeddings = compute_speaker_embeddings(&net, &extractor).unwrap_or_default();
+	println!(
+		"Final embeddings to save: {} for {} speakers",
+		new_embeddings.len(),
+		net.output_size()
+	);
+	net.set_embeddings(new_embeddings);
+
+	if let Err(e) = net.save(MODEL_PATH) {
+		eprintln!("Failed to save model: {}", e);
+	}
+	
+	println!(
+		"Computed {} embeddings for {} speakers",
+		net.embeddings().len(),
+		net.output_size()
+	);
+	
     if count > 0 {
         println!("Average training loss: {:.4}", final_loss / count as f32);
     }
@@ -772,15 +791,7 @@ fn main() {
         println!("Speaker {}: {} samples", i, count);
     }
 
-    // net is the trained model
-	let new_embeddings = compute_speaker_embeddings(&net, &extractor).unwrap_or_default();
-	net.set_embeddings(new_embeddings);
-	
-	println!(
-		"Computed {} embeddings for {} speakers",
-		net.embeddings().len(),
-		net.output_size()
-	);
+    
 
 	// Must save AFTER embeddings are set
 	if let Err(e) = net.save(MODEL_PATH) {
