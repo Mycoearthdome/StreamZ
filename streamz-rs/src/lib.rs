@@ -925,8 +925,8 @@ impl SimpleNeuralNet {
 	}
     
     pub fn forward_embedding(&self, input: &[f32]) -> Vec<f32> {
-		let h1 = relu(&(self.w1.dot(&ndarray::arr1(input)) + &self.b1));
-		let h2 = relu(&(self.w2.dot(&h1) + &self.b2));
+		let h1 = Self::relu(&(self.w1.dot(&ndarray::arr1(input)) + &self.b1));
+		let h2 = Self::relu(&(self.w2.dot(&h1) + &self.b2));
 		h2.to_vec()
 	}
 
