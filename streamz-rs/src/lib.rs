@@ -916,6 +916,24 @@ impl SimpleNeuralNet {
         self.w1 -= &(grad_w1 * scale);
         self.b1 -= &(grad_b1 * scale);
     }
+    
+    pub fn forward_embedding(&self, input: &[f32]) -> Vec<f32> {
+        use ndarray::{Array1, Array2};
+
+        // Convert input to ndarray
+        let x = Array1::from_vec(input.to_vec());
+
+        // Input to hidden layer 1
+        let mut h1 = self.w1.dot(&x) + &self.b1;
+        h1.mapv_inplace(|v| v.max(0.0)); // ReLU
+
+        // Hidden layer 1 to hidden layer 2
+        let mut h2 = self.w2.dot(&h1) + &self.b2;
+        h2.mapv_inplace(|v| v.max(0.0)); // ReLU
+
+        // This is the embedding — before the output layer
+        h2.to_vec()
+    }
 
     pub fn save(&self, path: &str) -> Result<(), Box<dyn Error>> {
         let file = File::create(path)?;
@@ -1231,31 +1249,27 @@ pub fn extract_embedding(
     }
 
     normalize(&mut emb);
-    emb
+    embfor
 }
 
 /// Compute an embedding from precomputed feature windows.
-pub fn extract_embedding_from_features(net: &SimpleNeuralNet, windows: &[Vec<f32>]) -> Vec<f32> {
-    let mut wins = Vec::new();
-    for win in windows {
-        wins.push(net.embed(win));
+pub fn extract_embedding_from_features(net: &SimpleNeuralNet, feats: &[Vec<f32>]) -> Vec<f32> {
+    let mut acc = vec![0.0; net.embedding_size()];
+    let mut count = 0;
+    for window in feats {
+        let out = net.forward_embedding(window);
+        for (i, v) in out.iter().enumerate() {
+            acc[i] += *v;
+        }
+        count += 1;
     }
-    if wins.is_empty() {
-        return vec![0.0; net.embedding_size()];
+    if count > 0 {
+        for v in &mut acc {
+            *v /= count as f32;
+        }
     }
-    let mut emb = vec![0.0f32; net.embedding_size()];
-    for i in 0..net.embedding_size() {
-        let mut vals: Vec<f32> = wins.iter().map(|v| v[i]).collect();
-        vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let mid = vals.len() / 2;
-        emb[i] = if vals.len() % 2 == 0 {
-            (vals[mid - 1] + vals[mid]) / 2.0
-        } else {
-            vals[mid]
-        };
-    }
-    normalize(&mut emb);
-    emb
+    normalize(&mut acc); // <- keep normalization for cosine similarity
+    acc
 }
 
 /// Identify the speaker whose centroid is closest (cosine) to the given embedding.
