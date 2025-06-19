@@ -930,11 +930,11 @@ impl SimpleNeuralNet {
     
     pub fn forward_embedding(&self, input: &[f32]) -> Vec<f32> {
 
-    let x: Array1<f32> = arr1(input); // shape: (60,)
-    let h1 = Self::relu(&(self.w1.dot(&x) + &self.b1));
-    let h2 = Self::relu(&(self.w2.dot(&h1) + &self.b2));
+    let x = arr1(input); // shape (60,)
+    let h1 = Self::relu(&(self.w1.t().dot(&x) + &self.b1)); // shape (512,)
+    let h2 = Self::relu(&(self.w2.t().dot(&h1) + &self.b2)); // shape (embedding_size,)
     let mut vec = h2.to_vec();
-    normalize(&mut vec);
+    normalize(&mut vec); // ensure cosine distance makes sense
     vec
 }
 
