@@ -344,6 +344,9 @@ pub fn pretrain_network(
             for win in chunk {
                 let mut feats = win.clone();
                 apply_dropout(&mut feats, dropout);
+                if feats.iter().all(|v| *v == 0.0) {
+                    continue;
+                }
                 let out = net.forward(&feats);
                 let loss: f32 = -target
                     .iter()
@@ -510,13 +513,7 @@ pub fn batch_resample(paths: &[String]) -> Vec<(String, Vec<i16>)> {
     use rayon::prelude::*;
     paths
         .par_iter()
-        .filter_map(|p| match load_and_resample_file(p) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                eprintln!("Error in {}: {}", p, e);
-                None
-            }
-        })
+        .filter_map(|p| load_and_resample_file(p).ok())
         .collect()
 }
 
@@ -578,6 +575,9 @@ pub fn pretrain_from_features(
             for win in chunk {
                 let mut feats = win.clone();
                 apply_dropout(&mut feats, dropout);
+                if feats.iter().all(|v| *v == 0.0) {
+                    continue;
+                }
                 let out = net.forward(&feats);
                 let loss: f32 = -target
                     .iter()
@@ -612,7 +612,7 @@ pub fn train_from_files(
 ) -> Result<(), Box<dyn Error>> {
     use indicatif::{ProgressBar, ProgressStyle};
     use rayon::prelude::*;
-    println!("Training on {} files individually", total_files);
+    let _ = total_files;
     let pb = ProgressBar::new(files.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
@@ -627,8 +627,7 @@ pub fn train_from_files(
 
         let samples = match load_and_resample_file(path) {
             Ok((_, s)) => s,
-            Err(e) => {
-                eprintln!("Skipping {}: {}", path, e);
+            Err(_) => {
                 pb.inc(1);
                 return;
             }
@@ -854,8 +853,6 @@ impl SimpleNeuralNet {
         self.b2 -= &(grad_b2 * lr);
         self.w1 -= &(grad_w1 * lr);
         self.b1 -= &(grad_b1 * lr);
-        println!("W1[0][0]: {}", self.w1[[0, 0]]);
-        println!("B1[0]: {}", self.b1[0]);
     }
 
     /// Train on a batch of feature vectors using the average gradient
@@ -917,8 +914,6 @@ impl SimpleNeuralNet {
         self.b2 -= &(grad_b2 * scale);
         self.w1 -= &(grad_w1 * scale);
         self.b1 -= &(grad_b1 * scale);
-        println!("W1[0][0]: {}", self.w1[[0, 0]]);
-        println!("B1[0]: {}", self.b1[0]);
     }
     
     fn relu<A>(x: &ndarray::ArrayBase<A, ndarray::Ix1>) -> ndarray::Array1<f32>
@@ -938,9 +933,7 @@ impl SimpleNeuralNet {
     let h1 = Self::relu(&(self.w1.t().dot(&x) + &self.b1)); // shape (512,)
     let h2 = Self::relu(&(self.w2.t().dot(&h1) + &self.b2)); // shape (embedding_size,)
     let mut vec = h2.to_vec();
-    // 🧪 Print raw (pre-normalized) output
-    println!("  \u{2192} Raw embedding output: {:?}", vec);
-    // normalize(&mut vec); // ensure cosine distance makes sense
+    normalize(&mut vec); // ensure cosine distance makes sense
     vec
 }
 
@@ -1281,8 +1274,7 @@ pub fn extract_embedding_from_features(net: &SimpleNeuralNet, feats: &[Vec<f32>]
     }
 
     // Normalize the final embedding to unit norm
-    // normalize(&mut acc);
-    println!("\u{2192} Extracted embedding: {:?}", acc);
+    normalize(&mut acc);
     acc
 }
 
@@ -1401,10 +1393,6 @@ pub fn identify_speaker_cosine(
         let adaptive_factor = if speaker_embeds.len() < 200 { 0.3 } else { 1.0 };
         let dynamic_threshold = mean_sim + *std_sim * adaptive_factor;
         let accepted = sim > 0.35 && (sim > dynamic_threshold || sim > 0.5);
-        eprintln!(
-            "Sim to speaker {}: {:.4}, dyn_thres: {:.4}, accepted: {}",
-            i, sim, dynamic_threshold, accepted
-        );
         if accepted && sim > best_val {
             best_val = sim;
             best_idx = Some(i);
@@ -1435,10 +1423,6 @@ pub fn identify_speaker_cosine_feats(
         let adaptive_factor = if speaker_embeds.len() < 200 { 0.3 } else { 1.0 };
         let dynamic_threshold = mean_sim + *std_sim * adaptive_factor;
         let accepted = sim > 0.35 && (sim > dynamic_threshold || sim > 0.5);
-        eprintln!(
-            "Sim to speaker {}: {:.4}, dyn_thres: {:.4}, accepted: {}",
-            i, sim, dynamic_threshold, accepted
-        );
         if accepted && sim > best_val {
             best_val = sim;
             best_idx = Some(i);
