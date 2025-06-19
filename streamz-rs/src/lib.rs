@@ -5,7 +5,7 @@ use hound;
 use mel_filter::{mel, NormalizationFactor};
 use minimp3::{Decoder, Error as Mp3Error, Frame};
 use ndarray::parallel::prelude::*;
-use ndarray::{s, Array1, Array2, Axis};
+use ndarray::{s, Array1, Array2, Axis, arr1};
 use ndarray_npy::{read_npy, write_npy, NpzReader, NpzWriter};
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -929,14 +929,14 @@ impl SimpleNeuralNet {
 	}
     
     pub fn forward_embedding(&self, input: &[f32]) -> Vec<f32> {
-        let h1 = Self::relu(&(self.w1.dot(&ndarray::arr1(input)) + &self.b1));
-        let h2 = Self::relu(&(self.w2.dot(&h1) + &self.b2));
-        let mut vec = h2.to_vec();
-        normalize(&mut vec);
-        vec
-    }
 
-
+    let x: Array1<f32> = arr1(input); // shape: (60,)
+    let h1 = Self::relu(&(self.w1.dot(&x) + &self.b1));
+    let h2 = Self::relu(&(self.w2.dot(&h1) + &self.b2));
+    let mut vec = h2.to_vec();
+    normalize(&mut vec);
+    vec
+}
 
     pub fn save(&self, path: &str) -> Result<(), Box<dyn Error>> {
         let file = File::create(path)?;
