@@ -854,6 +854,8 @@ impl SimpleNeuralNet {
         self.b2 -= &(grad_b2 * lr);
         self.w1 -= &(grad_w1 * lr);
         self.b1 -= &(grad_b1 * lr);
+        println!("W1[0][0]: {}", self.w1[[0, 0]]);
+        println!("B1[0]: {}", self.b1[0]);
     }
 
     /// Train on a batch of feature vectors using the average gradient
@@ -915,6 +917,8 @@ impl SimpleNeuralNet {
         self.b2 -= &(grad_b2 * scale);
         self.w1 -= &(grad_w1 * scale);
         self.b1 -= &(grad_b1 * scale);
+        println!("W1[0][0]: {}", self.w1[[0, 0]]);
+        println!("B1[0]: {}", self.b1[0]);
     }
     
     fn relu<A>(x: &ndarray::ArrayBase<A, ndarray::Ix1>) -> ndarray::Array1<f32>
@@ -934,7 +938,9 @@ impl SimpleNeuralNet {
     let h1 = Self::relu(&(self.w1.t().dot(&x) + &self.b1)); // shape (512,)
     let h2 = Self::relu(&(self.w2.t().dot(&h1) + &self.b2)); // shape (embedding_size,)
     let mut vec = h2.to_vec();
-    normalize(&mut vec); // ensure cosine distance makes sense
+    // 🧪 Print raw (pre-normalized) output
+    println!("  \u{2192} Raw embedding output: {:?}", vec);
+    // normalize(&mut vec); // ensure cosine distance makes sense
     vec
 }
 
@@ -1275,7 +1281,8 @@ pub fn extract_embedding_from_features(net: &SimpleNeuralNet, feats: &[Vec<f32>]
     }
 
     // Normalize the final embedding to unit norm
-    normalize(&mut acc);
+    // normalize(&mut acc);
+    println!("\u{2192} Extracted embedding: {:?}", acc);
     acc
 }
 
