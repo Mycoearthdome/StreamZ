@@ -37,7 +37,6 @@ const DROPOUT_PROB: f32 = streamz_rs::DEFAULT_DROPOUT;
 const BATCH_SIZE: usize = 8;
 
 
-
 fn load_train_files(path: &str) -> Vec<(String, Option<usize>)> {
     if let Ok(content) = fs::read_to_string(path) {
         let mut files = Vec::new();
@@ -494,17 +493,17 @@ fn main() {
                                 let mut embedding = extract_embedding_from_features(&net, windows);
                                 normalize(&mut embedding);
                                 let emb_norm = embedding.iter().map(|v| v * v).sum::<f32>().sqrt();
-				eprintln!(
-					"\nEvaluating file: {}\nTrue class: {}\nEmbedding norm: {:.4}",
-					path, true_class, emb_norm
-				);
+                                eprintln!(
+                                        "\nEvaluating file: {}\nTrue class: {}\nEmbedding norm: {:.6}",
+                                        path, true_class, emb_norm
+                                );
 
 				let mut best_id = usize::MAX;
 				let mut best_sim = f32::MIN;
 
 				for (&id, centroid) in &speaker_embeddings {
 					let sim = cosine_similarity(&embedding, centroid);
-					eprintln!("  → Similarity to speaker {}: {:.4}", id, sim);
+                                        eprintln!("  → Similarity to speaker {}: {:.6}", id, sim);
 					if sim > conf_threshold && sim > best_sim {
 						best_sim = sim;
 						best_id = id;
