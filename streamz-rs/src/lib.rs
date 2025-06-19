@@ -1278,6 +1278,30 @@ pub fn extract_embedding_from_features(net: &SimpleNeuralNet, feats: &[Vec<f32>]
     acc
 }
 
+/// Compute a median-based embedding from precomputed feature windows.
+pub fn median_embedding_from_features(net: &SimpleNeuralNet, feats: &[Vec<f32>]) -> Vec<f32> {
+    let mut windows = Vec::new();
+    for win in feats {
+        windows.push(net.forward_embedding(win));
+    }
+    if windows.is_empty() {
+        return vec![0.0; net.embedding_size()];
+    }
+    let mut emb = vec![0.0f32; net.embedding_size()];
+    for i in 0..net.embedding_size() {
+        let mut vals: Vec<f32> = windows.iter().map(|v| v[i]).collect();
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mid = vals.len() / 2;
+        emb[i] = if vals.len() % 2 == 0 {
+            (vals[mid - 1] + vals[mid]) / 2.0
+        } else {
+            vals[mid]
+        };
+    }
+    normalize(&mut emb);
+    emb
+}
+
 /// Identify the speaker whose centroid is closest (cosine) to the given embedding.
 /// Returns either the matched speaker ID, or a new ID (usize::MAX) if no match passes threshold.
 pub fn identify_speaker_from_embedding(
@@ -1332,7 +1356,7 @@ pub fn compute_speaker_embeddings(
         let mut embeds = Vec::new();
         for path in files {
             if let Ok(wins) = load_cached_features(path, extractor) {
-                let mut emb = extract_embedding_from_features(net, &wins);
+                let mut emb = median_embedding_from_features(net, &wins);
                 normalize(&mut emb);
                 embeds.push(emb);
             }
