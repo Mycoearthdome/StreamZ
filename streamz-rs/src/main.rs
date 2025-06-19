@@ -698,19 +698,11 @@ fn main() {
                         matched
                     };
 
-                    // Record the file for this speaker
-                    {
-                        let mut net_w = net_arc.write().unwrap();
-                        net_w.record_training_file(speaker_id, path);
-                    }
-
-                    // Clone network for local training
-                    let mut net_local = { net_arc.read().unwrap().clone() };
-
                     let lr = if count < 1000 { 0.05 } else { 0.01 };
-                    let output_size = net_local.output_size();
+                    let mut net_w = net_arc.write().unwrap();
+                    let output_size = net_w.output_size();
                     let loss = pretrain_from_features(
-                        &mut net_local,
+                        &mut net_w,
                         windows,
                         speaker_id,
                         output_size,
@@ -719,17 +711,15 @@ fn main() {
                         DROPOUT_PROB,
                         BATCH_SIZE,
                     );
+                    net_w.record_training_file(speaker_id, path);
                     *total_loss.lock().unwrap() += loss;
 
-                    // Write back updates
                     {
-                        let mut net_w = net_arc.write().unwrap();
                         let mut feats_w = speaker_features.write().unwrap();
                         let mut embeds_w = speaker_embeddings.write().unwrap();
 
                         feats_w.entry(speaker_id).or_default().push(emb.clone());
                         embeds_w.insert(speaker_id, average_vectors(&feats_w[&speaker_id]));
-                        *net_w = net_local;
                     }
 
                     let updated = loss_count.fetch_add(1, Ordering::SeqCst) + 1;
