@@ -30,7 +30,7 @@ const DEFAULT_CONF_THRESHOLD: f32 = 0.8;
 const DEFAULT_BURN_IN_FRAC: f32 = 0.2;
 /// Number of training epochs for each file.
 /// Increasing this can improve model convergence at the cost of longer runtime.
-const TRAIN_EPOCHS: usize = 60;
+const TRAIN_EPOCHS: usize = 100;
 /// Dropout probability used during training.
 const DROPOUT_PROB: f32 = streamz_rs::DEFAULT_DROPOUT;
 /// Number of feature windows per training batch.
