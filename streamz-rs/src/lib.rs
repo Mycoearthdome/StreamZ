@@ -5,7 +5,7 @@ use hound;
 use mel_filter::{mel, NormalizationFactor};
 use minimp3::{Decoder, Error as Mp3Error, Frame};
 use ndarray::parallel::prelude::*;
-use ndarray::{s, Array1, Array2, Axis, arr1};
+use ndarray::{arr1, s, Array1, Array2, Axis};
 use ndarray_npy::{read_npy, write_npy, NpzReader, NpzWriter};
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -915,26 +915,25 @@ impl SimpleNeuralNet {
         self.w1 -= &(grad_w1 * scale);
         self.b1 -= &(grad_b1 * scale);
     }
-    
-    fn relu<A>(x: &ndarray::ArrayBase<A, ndarray::Ix1>) -> ndarray::Array1<f32>
-	where
-		A: ndarray::Data<Elem = f32>,
-	{
-		x.mapv(|v| v.max(0.0))
-	}
-	
-	fn tanh(x: &Array1<f32>) -> Array1<f32> {
-		x.mapv(|v| v.tanh())
-	}
-    
-    pub fn forward_embedding(&self, input: &[f32]) -> Vec<f32> {
 
-    let x = arr1(input); // shape (60,)
-    let h1 = Self::relu(&(self.w1.t().dot(&x) + &self.b1)); // shape (512,)
-    let h2 = Self::relu(&(self.w2.t().dot(&h1) + &self.b2)); // shape (embedding_size,)
-    let vec = h2.to_vec();
-    vec
-}
+    fn relu<A>(x: &ndarray::ArrayBase<A, ndarray::Ix1>) -> ndarray::Array1<f32>
+    where
+        A: ndarray::Data<Elem = f32>,
+    {
+        x.mapv(|v| v.max(0.0))
+    }
+
+    fn tanh(x: &Array1<f32>) -> Array1<f32> {
+        x.mapv(|v| v.tanh())
+    }
+
+    pub fn forward_embedding(&self, input: &[f32]) -> Vec<f32> {
+        let x = arr1(input); // shape (60,)
+        let h1 = Self::relu(&(self.w1.t().dot(&x) + &self.b1)); // shape (512,)
+        let h2 = Self::relu(&(self.w2.t().dot(&h1) + &self.b2)); // shape (embedding_size,)
+        let vec = h2.to_vec();
+        vec
+    }
 
     pub fn save(&self, path: &str) -> Result<(), Box<dyn Error>> {
         let file = File::create(path)?;
@@ -1454,6 +1453,58 @@ pub fn identify_speaker_cosine_feats(
     best_idx
 }
 
+/// Cluster embedding vectors using a basic k-means algorithm.
+///
+/// Returns a vector containing the assigned cluster ID for each input
+/// embedding. This can be used to group similar speakers or correct
+/// mislabeled data.
+pub fn cluster_embeddings(embeds: &[Vec<f32>], k: usize, iterations: usize) -> Vec<usize> {
+    if embeds.is_empty() || k == 0 {
+        return Vec::new();
+    }
+    let mut rng = rand::thread_rng();
+    let dim = embeds[0].len();
+    let mut centers: Vec<Vec<f32>> = embeds.choose_multiple(&mut rng, k).cloned().collect();
+    let mut assignments = vec![0usize; embeds.len()];
+    for _ in 0..iterations.max(1) {
+        // Assign each embedding to the closest center
+        for (i, e) in embeds.iter().enumerate() {
+            let mut best = 0usize;
+            let mut best_sim = -1.0f32;
+            for (j, c) in centers.iter().enumerate() {
+                let sim = cosine_similarity(e, c);
+                if sim > best_sim {
+                    best_sim = sim;
+                    best = j;
+                }
+            }
+            assignments[i] = best;
+        }
+
+        // Recompute centers
+        let mut sums = vec![vec![0.0f32; dim]; k];
+        let mut counts = vec![0usize; k];
+        for (e, &a) in embeds.iter().zip(assignments.iter()) {
+            for (i, v) in e.iter().enumerate() {
+                sums[a][i] += *v;
+            }
+            counts[a] += 1;
+        }
+        for j in 0..k {
+            if counts[j] > 0 {
+                for i in 0..dim {
+                    sums[j][i] /= counts[j] as f32;
+                }
+                normalize(&mut sums[j]);
+                centers[j] = sums[j].clone();
+            } else {
+                centers[j] = embeds.choose(&mut rng).unwrap().clone();
+            }
+        }
+    }
+    assignments
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1471,7 +1522,25 @@ mod tests {
         let target = vec![1.0, 0.0];
         net.train_batch(&batch, &target, 0.1);
 
-        assert!(net.w1 != w1_before || net.w2 != w2_before || net.b1 != b1_before || net.b2 != b2_before,
-                "weights did not change after training step");
+        assert!(
+            net.w1 != w1_before
+                || net.w2 != w2_before
+                || net.b1 != b1_before
+                || net.b2 != b2_before,
+            "weights did not change after training step"
+        );
+    }
+
+    #[test]
+    fn cluster_assigns_similar_embeddings() {
+        let emb_a = vec![vec![1.0, 0.0], vec![0.9, 0.1]];
+        let emb_b = vec![vec![0.0, 1.0], vec![0.1, 0.9]];
+        let mut all = emb_a.clone();
+        all.extend(emb_b.clone());
+        let labels = cluster_embeddings(&all, 2, 5);
+        assert_eq!(labels.len(), 4);
+        assert_eq!(labels[0], labels[1]);
+        assert_eq!(labels[2], labels[3]);
+        assert_ne!(labels[0], labels[2]);
     }
 }

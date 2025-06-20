@@ -57,7 +57,7 @@ Run the classifier:
 ```bash
 ./target/release/StreamZ [--burn-in-limit <n>] [--max-speakers <n>] [--no-cache-wav] \
                        [--threshold <value>] [--eval] [--eval-split <fraction>] \
-                       [--force] [--retrain]
+                       [--force] [--retrain] [--cluster-embeddings <k>]
 ```
 
 During the run every file listed in `train_files.txt` is processed.  If a line lacks a speaker label the program will attempt to match it against previously learned voices and will append the chosen label to the file.  Newly discovered speakers are added to the model automatically.  The updated model and list of files are written back to disk at the end of the run.
@@ -73,6 +73,7 @@ During the run every file listed in `train_files.txt` is processed.  If a line l
 - `--force` retrains the model even when a saved model exists.
 - `--retrain` behaves like `--force` and can be used without `--eval`.
 - `--check-embeddings` loads `model.npz` and prints quality metrics for any embeddings stored in the file. If none are saved it recomputes them from the training data.
+- `--cluster-embeddings <k>` groups saved speaker embeddings into `k` clusters and prints the assignments.
 
 ## Feature Caching
 
@@ -98,6 +99,7 @@ greatly speeds up repeated training or evaluation on the same dataset.
 - Use `--eval` to measure model accuracy without updating weights.
 - `--eval-split <fraction>` sets the portion of labelled data reserved for evaluation when `target_files.txt` is absent.
 - `--check-embeddings` loads `model.npz` and prints quality metrics for any embeddings stored in the file. If none are saved it recomputes them from the training data.
+- `--cluster-embeddings <k>` groups saved speaker embeddings into `k` clusters and prints the assignments.
 
 ## Threaded Components
 
