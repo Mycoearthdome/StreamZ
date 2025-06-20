@@ -706,7 +706,7 @@ fn main() {
                         windows,
                         speaker_id,
                         output_size,
-                        TRAIN_EPOCHS,
+                        5,
                         lr,
                         DROPOUT_PROB,
                         BATCH_SIZE,
