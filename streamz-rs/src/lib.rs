@@ -1312,13 +1312,26 @@ pub fn identify_speaker_from_embedding(
 
     for (&id, centroid) in speaker_embeddings.iter() {
         let sim = cosine_similarity(emb, centroid);
-        if sim > threshold && sim > best_sim {
+        if sim > best_sim {
             best_sim = sim;
             best_id = id;
         }
     }
 
-    best_id
+    // Relax the matching threshold when few speakers are available to avoid
+    // creating excessive new classes early on. This helps group similar
+    // recordings together before the model is fully trained.
+    let dynamic_threshold = if speaker_embeddings.len() < 20 {
+        threshold * 0.7
+    } else {
+        threshold
+    };
+
+    if best_sim > dynamic_threshold {
+        best_id
+    } else {
+        usize::MAX
+    }
 }
 
 /// Calculate cosine similarity between two embedding vectors
