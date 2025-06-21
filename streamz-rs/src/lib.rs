@@ -1616,6 +1616,8 @@ pub fn cluster_embeddings(embeds: &[Vec<f32>], k: usize, iterations: usize) -> V
 /// recovered when [`CHECKSUM_CONSTANT`] is presented as input.
 pub fn encode_file(net: &mut SimpleNeuralNet, path: &str) -> Result<(), Box<dyn Error>> {
     use std::io::Read;
+    use indicatif::{ProgressBar, ProgressStyle};
+    use std::time::Duration;
     let mut data = Vec::new();
     File::open(path)?.read_to_end(&mut data)?;
 
@@ -1634,8 +1636,18 @@ pub fn encode_file(net: &mut SimpleNeuralNet, path: &str) -> Result<(), Box<dyn 
     }
 
     *net = SimpleNeuralNet::new(input_bits.len(), 64, 32, target_bits.len());
+    let pb = ProgressBar::new(2000);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{msg} {bar:40} {pos}/{len} ETA {eta}")
+            .unwrap(),
+    );
+    pb.set_message("Encoding".to_string());
+    pb.enable_steady_tick(Duration::from_millis(100));
+
     for _ in 0..2000 {
         net.train_bits(&input_bits, &target_bits, 0.5);
+        pb.inc(1);
         let preds = net.forward_bits(&input_bits);
         if preds
             .iter()
@@ -1645,6 +1657,7 @@ pub fn encode_file(net: &mut SimpleNeuralNet, path: &str) -> Result<(), Box<dyn 
             break;
         }
     }
+    pb.finish_and_clear();
     Ok(())
 }
 
