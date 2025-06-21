@@ -885,6 +885,7 @@ dependencies = [
  "rubato",
  "rustdct",
  "rustfft 6.4.0",
+ "sha2",
  "tokio",
 ]
 

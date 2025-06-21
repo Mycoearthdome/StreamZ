@@ -35,6 +35,17 @@ pub const FEATURE_SIZE: usize = if WITH_DELTAS {
 /// Default dropout probability applied during training.
 pub const DEFAULT_DROPOUT: f32 = 0.2;
 
+/// Magic checksum controlling hidden encoding as a lowercase hex string
+pub const CHECKSUM_CONSTANT: &str =
+    "4273195488fa01ce67a35d4b90ef3312a5b6c7d8e9f0112233445566778899aabbccddeeff102030405060708090a0b0c0d0e0f102132435465768798a9bacbd";
+
+fn hex_to_bytes(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .filter_map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
 /// Whether WAV caching is enabled. This can be toggled at runtime via
 /// [`set_wav_cache_enabled`]. Caching is enabled by default so that the
 /// same files are not repeatedly converted.
@@ -807,6 +818,52 @@ impl SimpleNeuralNet {
         self.w2.ncols()
     }
 
+    /// Forward pass with a sigmoid output layer used for hidden encoding.
+    pub fn forward_bits(&self, bits: &[f32]) -> Vec<f32> {
+        let x = Array1::from_vec(bits.to_vec());
+        let h1 = (x.dot(&self.w1) + &self.b1).mapv(|v| if v > 0.0 { v } else { 0.0 });
+        let h2 = (h1.dot(&self.w2) + &self.b2).mapv(|v| v.tanh());
+        let out_pre = h2.dot(&self.w3) + &self.b3;
+        out_pre.mapv(|v| 1.0 / (1.0 + (-v).exp())).to_vec()
+    }
+
+    /// Single-step training for [`forward_bits`] using mean squared error.
+    pub fn train_bits(&mut self, bits: &[f32], target: &[f32], lr: f32) {
+        let x = Array1::from_vec(bits.to_vec());
+        let t = Array1::from_vec(target.to_vec());
+        let h1_pre = x.dot(&self.w1) + &self.b1;
+        let h1 = h1_pre.mapv(|v| if v > 0.0 { v } else { 0.0 });
+        let h2_pre = h1.dot(&self.w2) + &self.b2;
+        let h2 = h2_pre.mapv(|v| v.tanh());
+        let out_pre = h2.dot(&self.w3) + &self.b3;
+        let out = out_pre.mapv(|v| 1.0 / (1.0 + (-v).exp()));
+        let diff = &out - &t;
+        let delta_out = &diff * &out.mapv(|v| v * (1.0 - v));
+        let grad_w3 = h2
+            .view()
+            .insert_axis(Axis(1))
+            .dot(&delta_out.clone().insert_axis(Axis(0)));
+        let grad_b3 = delta_out.clone();
+        let delta_h2 = delta_out.dot(&self.w3.t()) * h2.mapv(|v| 1.0 - v * v);
+        let grad_w2 = h1
+            .insert_axis(Axis(1))
+            .dot(&delta_h2.clone().insert_axis(Axis(0)));
+        let grad_b2 = delta_h2.clone();
+        let delta_h1 =
+            delta_h2.dot(&self.w2.t()) * h1_pre.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
+        let grad_w1 = x
+            .insert_axis(Axis(1))
+            .dot(&delta_h1.clone().insert_axis(Axis(0)));
+        let grad_b1 = delta_h1;
+
+        self.w3 -= &(grad_w3 * lr);
+        self.b3 -= &(grad_b3 * lr);
+        self.w2 -= &(grad_w2 * lr);
+        self.b2 -= &(grad_b2 * lr);
+        self.w1 -= &(grad_w1 * lr);
+        self.b1 -= &(grad_b1 * lr);
+    }
+
     /// Single-step training using cross entropy loss
     pub fn train(&mut self, bits: &[f32], target: &[f32], lr: f32) {
         let x = Array1::from_vec(bits.to_vec());
@@ -1516,6 +1573,69 @@ pub fn cluster_embeddings(embeds: &[Vec<f32>], k: usize, iterations: usize) -> V
         }
     }
     assignments
+}
+
+/// Encode arbitrary file contents into the network so they can be
+/// recovered when [`CHECKSUM_CONSTANT`] is presented as input.
+pub fn encode_file(net: &mut SimpleNeuralNet, path: &str) -> Result<(), Box<dyn Error>> {
+    use std::io::Read;
+    let mut data = Vec::new();
+    File::open(path)?.read_to_end(&mut data)?;
+
+    let mut target_bits = Vec::with_capacity(data.len() * 8);
+    for byte in data {
+        for i in (0..8).rev() {
+            target_bits.push(((byte >> i) & 1) as f32);
+        }
+    }
+
+    let mut input_bits = Vec::new();
+    for b in hex_to_bytes(CHECKSUM_CONSTANT) {
+        for i in (0..8).rev() {
+            input_bits.push(((b >> i) & 1) as f32);
+        }
+    }
+
+    *net = SimpleNeuralNet::new(input_bits.len(), 64, 32, target_bits.len());
+    for _ in 0..2000 {
+        net.train_bits(&input_bits, &target_bits, 0.5);
+        let preds = net.forward_bits(&input_bits);
+        if preds
+            .iter()
+            .zip(target_bits.iter())
+            .all(|(p, t)| (*p > 0.5) as u8 as f32 == *t)
+        {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Extract binary data previously stored with [`encode_file`]. The network is
+/// presented with the checksum bits and the weights are read back to reconstruct
+/// the bytes.
+pub fn extract_file(net: &SimpleNeuralNet) -> Vec<u8> {
+    let mut input_bits = Vec::new();
+    for b in hex_to_bytes(CHECKSUM_CONSTANT) {
+        for i in (0..8).rev() {
+            input_bits.push(((b >> i) & 1) as f32);
+        }
+    }
+
+    let preds = net.forward_bits(&input_bits);
+    let bits: Vec<u8> = preds.iter().map(|v| if *v > 0.5 { 1u8 } else { 0u8 }).collect();
+
+    let mut bytes = Vec::new();
+    for chunk in bits.chunks(8) {
+        let mut byte = 0u8;
+        for (i, bit) in chunk.iter().enumerate() {
+            if *bit != 0 {
+                byte |= 1 << (7 - i);
+            }
+        }
+        bytes.push(byte);
+    }
+    bytes
 }
 
 #[cfg(test)]
