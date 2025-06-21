@@ -4,7 +4,7 @@
 use hound;
 use mel_filter::{mel, NormalizationFactor};
 use minimp3::{Decoder, Error as Mp3Error, Frame};
-use ndarray::parallel::prelude::*;
+// use ndarray::parallel::prelude::*;
 use ndarray::{arr1, s, Array1, Array2, Axis};
 use ndarray_npy::{read_npy, write_npy, NpzReader, NpzWriter};
 use rand::seq::SliceRandom;
@@ -1017,9 +1017,9 @@ impl SimpleNeuralNet {
         x.mapv(|v| v.max(0.0))
     }
 
-    fn tanh(x: &Array1<f32>) -> Array1<f32> {
-        x.mapv(|v| v.tanh())
-    }
+    // fn tanh(x: &Array1<f32>) -> Array1<f32> {
+    //     x.mapv(|v| v.tanh())
+    // }
 
     pub fn forward_embedding(&self, input: &[f32]) -> Vec<f32> {
         let x = arr1(input); // shape (60,)
