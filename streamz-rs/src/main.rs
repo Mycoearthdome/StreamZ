@@ -345,6 +345,7 @@ fn main() {
     let mut burn_in_limit: Option<usize> = None;
     let mut max_speakers: Option<usize> = None;
     let mut encode_path: Option<String> = None;
+    let mut decode_path: Option<String> = None;
     let mut checksum_arg: Option<String> = None;
     let eval_mode = args.iter().any(|a| a == "--eval");
     let check_embeddings = args.iter().any(|a| a == "--check-embeddings");
@@ -425,6 +426,13 @@ fn main() {
             encode_path = Some(val.clone());
         } else {
             eprintln!("Missing value for --encode");
+        }
+    }
+    if let Some(idx) = args.iter().position(|a| a == "--decode") {
+        if let Some(val) = args.get(idx + 1) {
+            decode_path = Some(val.clone());
+        } else {
+            eprintln!("Missing value for --decode");
         }
     }
     if let Some(idx) = args.iter().position(|a| a == "--checksum") {
@@ -640,18 +648,18 @@ fn main() {
     }
 
     if CHECKSUM_TRIGGERED.load(Ordering::Relaxed) {
-        if let Some(ref p) = encode_path {
-            if let Err(e) = encode_file(&mut net, p) {
-                eprintln!("Encoding failed: {}", e);
-            }
-        } else {
+        if let Some(ref out) = decode_path {
             let bytes = extract_file(&net);
-            if let Ok(mut f) = std::fs::File::create("recovered.file") {
+            if let Ok(mut f) = std::fs::File::create(out) {
                 if let Err(e) = f.write_all(&bytes) {
-                    eprintln!("Failed to write recovered.file: {}", e);
+                    eprintln!("Failed to write {}: {}", out, e);
                 }
             } else {
-                eprintln!("Failed to create recovered.file");
+                eprintln!("Failed to create {}", out);
+            }
+        } else if let Some(ref p) = encode_path {
+            if let Err(e) = encode_file(&mut net, p) {
+                eprintln!("Encoding failed: {}", e);
             }
         }
     }
