@@ -182,7 +182,7 @@ fn cache_mp3_as_wav(original: &str) -> Option<String> {
         }
     }
 
-    if let Ok(mut f) = std::fs::File::open(&cached_path) {
+    if let Ok(mut f) = std::fs::File::open(original) {
         use std::io::Read;
         let mut buf = Vec::new();
         if f.read_to_end(&mut buf).is_ok() {
