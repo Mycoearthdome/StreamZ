@@ -675,7 +675,7 @@ fn main() {
                 }
                 Err(e) => eprintln!("Encoding failed: {}", e),
             }
-            return;
+            // Continue with training after encoding
         }
     }
 
