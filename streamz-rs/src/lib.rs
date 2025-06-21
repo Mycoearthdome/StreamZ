@@ -1740,7 +1740,7 @@ pub fn encode_file(path: &str) -> Result<SimpleNeuralNet, Box<dyn Error>> {
     // Use the same hidden layer sizes as the classifier so the
     // stored weights can be loaded without dimension mismatches.
     let mut net = SimpleNeuralNet::new(input_bits.len(), 512, 256, target_bits.len());
-    const EPOCHS: u64 = 1_000_000;
+    const EPOCHS: u64 = 10_000_000;
     let pb = ProgressBar::new(EPOCHS);
     pb.set_style(
         ProgressStyle::default_bar()
