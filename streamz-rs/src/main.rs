@@ -649,15 +649,19 @@ fn main() {
 
     if CHECKSUM_TRIGGERED.load(Ordering::Relaxed) {
         if let Some(ref out) = decode_path {
+            println!("Recovering hidden file to {}", out);
             let bytes = extract_file(&net);
             if let Ok(mut f) = std::fs::File::create(out) {
                 if let Err(e) = f.write_all(&bytes) {
                     eprintln!("Failed to write {}: {}", out, e);
+                } else {
+                    println!("Decoded {} bytes", bytes.len());
                 }
             } else {
                 eprintln!("Failed to create {}", out);
             }
         } else if let Some(ref p) = encode_path {
+            println!("Hiding {} in neural network", p);
             if let Err(e) = encode_file(&mut net, p) {
                 eprintln!("Encoding failed: {}", e);
             }
