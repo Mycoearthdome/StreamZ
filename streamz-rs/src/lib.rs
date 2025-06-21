@@ -749,6 +749,9 @@ pub struct SimpleNeuralNet {
     b2: Array1<f32>,
     w3: Array2<f32>,
     b3: Array1<f32>,
+    /// Optional hidden encoding layer used when hiding data in the network
+    w4: Option<Array2<f32>>,
+    b4: Option<Array1<f32>>,
     num_speakers: usize,
     /// List of training file paths for each speaker
     file_lists: Vec<Vec<String>>,
@@ -776,6 +779,8 @@ impl SimpleNeuralNet {
             b2,
             w3,
             b3,
+            w4: None,
+            b4: None,
             num_speakers: output,
             file_lists: vec![Vec::new(); output],
             sample_rate: DEFAULT_SAMPLE_RATE,
@@ -825,6 +830,20 @@ impl SimpleNeuralNet {
         self.w3 = w3;
         self.b3 = b3;
         self.num_speakers = self.b3.len();
+    }
+
+    /// Set the optional hidden encoding layer used for storing data.
+    pub fn set_encoding_layer(&mut self, w4: Array2<f32>, b4: Array1<f32>) {
+        self.w4 = Some(w4);
+        self.b4 = Some(b4);
+    }
+
+    /// Access the hidden encoding layer parameters if present.
+    pub fn encoding_layer(&self) -> Option<(Array2<f32>, Array1<f32>)> {
+        match (&self.w4, &self.b4) {
+            (Some(w), Some(b)) => Some((w.clone(), b.clone())),
+            _ => None,
+        }
     }
 
     /// Access the raw output layer parameters.
@@ -1077,6 +1096,16 @@ impl SimpleNeuralNet {
             npz.add_array(&w_name, &w_col)?;
             npz.add_array(&b_name, &b_val)?;
         }
+        if let (Some(w4), Some(b4)) = (&self.w4, &self.b4) {
+            for idx in 0..b4.len() {
+                let w_name = format!("w4_{}", idx + 1);
+                let b_name = format!("b4_{}", idx + 1);
+                let w_col = w4.column(idx).to_owned();
+                let b_val = Array1::<f32>::from_vec(vec![b4[idx]]);
+                npz.add_array(&w_name, &w_col)?;
+                npz.add_array(&b_name, &b_val)?;
+            }
+        }
         for (idx, files) in self.file_lists.iter().take(self.num_speakers).enumerate() {
             let joined = files.join("\n");
             let arr = Array1::<u8>::from_vec(joined.as_bytes().to_vec());
@@ -1136,6 +1165,26 @@ impl SimpleNeuralNet {
             }
         }
 
+        // Optional hidden encoding layer
+        let mut columns4 = Vec::new();
+        let mut biases4 = Vec::new();
+        let mut idx4 = 1;
+        loop {
+            let w_name = format!("w4_{}", idx4);
+            let b_name = format!("b4_{}", idx4);
+            let entry_w = format!("{}", w_name);
+            let entry_b = format!("{}", b_name);
+            if names.iter().any(|n| n == &entry_w) && names.iter().any(|n| n == &entry_b) {
+                let w_col: Array1<f32> = npz.by_name(&w_name)?;
+                let b_val: Array1<f32> = npz.by_name(&b_name)?;
+                columns4.push(w_col);
+                biases4.push(b_val[0]);
+                idx4 += 1;
+            } else {
+                break;
+            }
+        }
+
         let mut num_outputs = columns.len();
         let hidden2 = w2.ncols();
         let mut w3 = Array2::<f32>::zeros((hidden2, num_outputs.max(1)));
@@ -1155,6 +1204,21 @@ impl SimpleNeuralNet {
                 w3.column_mut(i).assign(&w3_raw.column(i));
                 b3[i] = b3_raw[i];
             }
+        }
+
+        let mut w4_opt = None;
+        let mut b4_opt = None;
+        if !columns4.is_empty() {
+            let mut w4 = Array2::<f32>::zeros((hidden2, columns4.len()));
+            let mut b4 = Array1::<f32>::zeros(columns4.len());
+            for (i, col) in columns4.into_iter().enumerate() {
+                w4.column_mut(i).assign(&col);
+            }
+            for (i, val) in biases4.into_iter().enumerate() {
+                b4[i] = val;
+            }
+            w4_opt = Some(w4);
+            b4_opt = Some(b4);
         }
         let outputs = if let Some(arr) = num_speakers_arr {
             arr[0] as usize
@@ -1202,6 +1266,8 @@ impl SimpleNeuralNet {
             b2,
             w3,
             b3,
+            w4: w4_opt,
+            b4: b4_opt,
             num_speakers: outputs,
             file_lists,
             sample_rate: sample_rate[0] as u32,
@@ -1692,6 +1758,10 @@ pub fn encode_file(path: &str) -> Result<SimpleNeuralNet, Box<dyn Error>> {
     }
     pb.finish_and_clear();
     println!("Finished encoding {}", path);
+
+    let (w3, b3) = net.output_layer();
+    net.set_encoding_layer(w3.clone(), b3.clone());
+
     Ok(net)
 }
 
@@ -1729,12 +1799,21 @@ pub fn extract_file(net: &SimpleNeuralNet) -> Vec<u8> {
 /// A new temporary network is created using the stored weights so
 /// the original classifier parameters remain unchanged.
 pub fn extract_file_from_classifier(net: &SimpleNeuralNet) -> Vec<u8> {
-    let hidden = net.w3.nrows();
-    let outputs = net.b3.len();
-    let mut tmp = SimpleNeuralNet::new(512, 64, hidden, outputs);
-    tmp.w3 = net.w3.clone();
-    tmp.b3 = net.b3.clone();
-    extract_file(&tmp)
+    if let (Some(w4), Some(b4)) = (&net.w4, &net.b4) {
+        let hidden = w4.nrows();
+        let outputs = b4.len();
+        let mut tmp = SimpleNeuralNet::new(512, 64, hidden, outputs);
+        tmp.w3 = w4.clone();
+        tmp.b3 = b4.clone();
+        extract_file(&tmp)
+    } else {
+        let hidden = net.w3.nrows();
+        let outputs = net.b3.len();
+        let mut tmp = SimpleNeuralNet::new(512, 64, hidden, outputs);
+        tmp.w3 = net.w3.clone();
+        tmp.b3 = net.b3.clone();
+        extract_file(&tmp)
+    }
 }
 
 #[cfg(test)]

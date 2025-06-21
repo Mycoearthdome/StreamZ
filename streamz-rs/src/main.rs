@@ -666,10 +666,11 @@ fn main() {
             println!("Hiding {} in neural network", p);
             match encode_file(p) {
                 Ok(enc_net) => {
-                    let (w3, b3) = enc_net.output_layer();
-                    net.set_output_layer(w3, b3);
-                    if let Err(e) = net.save(MODEL_PATH) {
-                        eprintln!("Failed to save encoded model: {}", e);
+                    if let Some((w4, b4)) = enc_net.encoding_layer() {
+                        net.set_encoding_layer(w4, b4);
+                    } else {
+                        let (w3, b3) = enc_net.output_layer();
+                        net.set_encoding_layer(w3, b3);
                     }
                 }
                 Err(e) => eprintln!("Encoding failed: {}", e),
