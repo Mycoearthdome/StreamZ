@@ -39,6 +39,24 @@ pub const DEFAULT_DROPOUT: f32 = 0.2;
 pub const CHECKSUM_CONSTANT: &str =
     "4273195488fa01ce67a35d4b90ef3312a5b6c7d8e9f0112233445566778899aabbccddeeff102030405060708090a0b0c0d0e0f102132435465768798a9bacbd";
 
+/// Optional runtime override for [`CHECKSUM_CONSTANT`]
+static CHECKSUM_OVERRIDE: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+
+/// Set a new checksum value at runtime overriding [`CHECKSUM_CONSTANT`].
+pub fn set_checksum_constant_override(value: &str) {
+    let mut guard = CHECKSUM_OVERRIDE.lock().unwrap();
+    *guard = Some(value.to_string());
+}
+
+/// Get the active checksum constant, taking any override into account.
+pub fn get_checksum_constant() -> String {
+    CHECKSUM_OVERRIDE
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| CHECKSUM_CONSTANT.to_string())
+}
+
 fn hex_to_bytes(s: &str) -> Vec<u8> {
     (0..s.len())
         .step_by(2)
@@ -1615,8 +1633,8 @@ pub fn cluster_embeddings(embeds: &[Vec<f32>], k: usize, iterations: usize) -> V
 /// Encode arbitrary file contents into the network so they can be
 /// recovered when [`CHECKSUM_CONSTANT`] is presented as input.
 pub fn encode_file(net: &mut SimpleNeuralNet, path: &str) -> Result<(), Box<dyn Error>> {
-    use std::io::Read;
     use indicatif::{ProgressBar, ProgressStyle};
+    use std::io::Read;
     use std::time::Duration;
     let mut data = Vec::new();
     File::open(path)?.read_to_end(&mut data)?;
@@ -1629,7 +1647,7 @@ pub fn encode_file(net: &mut SimpleNeuralNet, path: &str) -> Result<(), Box<dyn 
     }
 
     let mut input_bits = Vec::new();
-    for b in hex_to_bytes(CHECKSUM_CONSTANT) {
+    for b in hex_to_bytes(&get_checksum_constant()) {
         for i in (0..8).rev() {
             input_bits.push(((b >> i) & 1) as f32);
         }
@@ -1666,7 +1684,7 @@ pub fn encode_file(net: &mut SimpleNeuralNet, path: &str) -> Result<(), Box<dyn 
 /// the bytes.
 pub fn extract_file(net: &SimpleNeuralNet) -> Vec<u8> {
     let mut input_bits = Vec::new();
-    for b in hex_to_bytes(CHECKSUM_CONSTANT) {
+    for b in hex_to_bytes(&get_checksum_constant()) {
         for i in (0..8).rev() {
             input_bits.push(((b >> i) & 1) as f32);
         }

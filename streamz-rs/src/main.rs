@@ -1,6 +1,5 @@
 use hound;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::time::Duration;
 use rayon::prelude::*;
 use sha2::{Digest, Sha512};
 use std::collections::{HashMap, HashSet};
@@ -10,12 +9,13 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 use streamz_rs::{
     average_vectors, batch_resample, compute_speaker_embeddings, cosine_similarity, encode_file,
-    extract_embedding_from_features, extract_file, identify_speaker_from_embedding,
-    load_and_resample_file, normalize, pretrain_from_features, set_wav_cache_enabled,
-    train_from_feature_map, with_thread_extractor, FeatureExtractor, SimpleNeuralNet,
-    CHECKSUM_CONSTANT, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
+    extract_embedding_from_features, extract_file, get_checksum_constant,
+    identify_speaker_from_embedding, load_and_resample_file, normalize, pretrain_from_features,
+    set_checksum_constant_override, set_wav_cache_enabled, train_from_feature_map,
+    with_thread_extractor, FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
 };
 
 const MODEL_PATH: &str = "model.npz";
@@ -191,7 +191,7 @@ fn cache_mp3_as_wav(original: &str) -> Option<String> {
                 .iter()
                 .map(|b| format!("{:02x}", b))
                 .collect::<String>();
-            if hex == CHECKSUM_CONSTANT {
+            if hex == get_checksum_constant() {
                 CHECKSUM_TRIGGERED.store(true, Ordering::Relaxed);
             }
         }
@@ -345,6 +345,7 @@ fn main() {
     let mut burn_in_limit: Option<usize> = None;
     let mut max_speakers: Option<usize> = None;
     let mut encode_path: Option<String> = None;
+    let mut checksum_arg: Option<String> = None;
     let eval_mode = args.iter().any(|a| a == "--eval");
     let check_embeddings = args.iter().any(|a| a == "--check-embeddings");
     // let force_retrain =
@@ -426,6 +427,17 @@ fn main() {
             eprintln!("Missing value for --encode");
         }
     }
+    if let Some(idx) = args.iter().position(|a| a == "--checksum") {
+        if let Some(val) = args.get(idx + 1) {
+            checksum_arg = Some(val.clone());
+        } else {
+            eprintln!("Missing value for --checksum");
+        }
+    }
+
+    if let Some(ref csum) = checksum_arg {
+        set_checksum_constant_override(csum);
+    }
 
     let mut train_files = load_train_files(TRAIN_FILE_LIST);
     if train_files.is_empty() {
@@ -448,12 +460,11 @@ fn main() {
     }
     let resampled_audio = batch_resample(&path_list);
     let feat_pb = ProgressBar::new(resampled_audio.len() as u64);
-    feat_pb
-        .set_style(
-            ProgressStyle::default_bar()
-                .template("{msg} {bar:40} {pos}/{len} ETA {eta}")
-                .unwrap(),
-        );
+    feat_pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{msg} {bar:40} {pos}/{len} ETA {eta}")
+            .unwrap(),
+    );
     feat_pb.enable_steady_tick(Duration::from_millis(100));
     let feat_pb = Arc::new(feat_pb);
     feat_pb.set_message("Extracting features".to_string());
