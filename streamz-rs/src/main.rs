@@ -1,21 +1,21 @@
 use hound;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
+use sha2::{Digest, Sha512};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use streamz_rs::{
-    average_vectors, batch_resample, compute_speaker_embeddings, encode_file, extract_embedding_from_features,
-    extract_file, identify_speaker_from_embedding, load_and_resample_file, CHECKSUM_CONSTANT,
-    pretrain_from_features, set_wav_cache_enabled, train_from_files, with_thread_extractor,
-    FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE, cosine_similarity,
-    normalize,
+    average_vectors, batch_resample, compute_speaker_embeddings, cosine_similarity, encode_file,
+    extract_embedding_from_features, extract_file, identify_speaker_from_embedding,
+    load_and_resample_file, normalize, pretrain_from_features, set_wav_cache_enabled,
+    train_from_feature_map, with_thread_extractor, FeatureExtractor, SimpleNeuralNet,
+    CHECKSUM_CONSTANT, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
 };
-use sha2::{Digest, Sha512};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const MODEL_PATH: &str = "model.npz";
 const TRAIN_FILE_LIST: &str = "train_files.txt";
@@ -36,7 +36,6 @@ const DROPOUT_PROB: f32 = streamz_rs::DEFAULT_DROPOUT;
 const BATCH_SIZE: usize = 8;
 
 static CHECKSUM_TRIGGERED: AtomicBool = AtomicBool::new(false);
-
 
 fn load_train_files(path: &str) -> Vec<(String, Option<usize>)> {
     if let Ok(content) = fs::read_to_string(path) {
@@ -187,7 +186,10 @@ fn cache_mp3_as_wav(original: &str) -> Option<String> {
         let mut buf = Vec::new();
         if f.read_to_end(&mut buf).is_ok() {
             let digest = Sha512::digest(&buf);
-            let hex = digest.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+            let hex = digest
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>();
             if hex == CHECKSUM_CONSTANT {
                 CHECKSUM_TRIGGERED.store(true, Ordering::Relaxed);
             }
@@ -443,16 +445,16 @@ fn main() {
     let feature_map: HashMap<String, Vec<Vec<f32>>> = resampled_audio
         .into_par_iter()
         .map(|(path, samples)| {
-            let feats = extractor.extract(&samples);
+            let feats = with_thread_extractor(|ext| ext.extract(&samples));
             (path, feats)
         })
         .collect();
-        
+
     for (p, _) in &train_files {
-		if !feature_map.contains_key(p) {
-			eprintln!("No features found for training path: {}", p);
-		}
-	}
+        if !feature_map.contains_key(p) {
+            eprintln!("No features found for training path: {}", p);
+        }
+    }
 
     let dataset_size = train_files.len();
     let burn_in_default = ((dataset_size as f32) * DEFAULT_BURN_IN_FRAC).ceil() as usize;
@@ -460,112 +462,112 @@ fn main() {
     let _max_speakers = max_speakers.unwrap_or_else(|| count_speakers(&train_files) + 10);
 
     if eval_mode {
-		println!("Evaluating with threshold = {}", conf_threshold);
+        println!("Evaluating with threshold = {}", conf_threshold);
 
-		let train_files_raw = load_train_files(TRAIN_FILE_LIST);
-		let target_files_raw = load_target_files(TARGET_FILE_LIST);
+        let train_files_raw = load_train_files(TRAIN_FILE_LIST);
+        let target_files_raw = load_target_files(TARGET_FILE_LIST);
 
-		let target_files_opt: Vec<(String, Option<usize>)> = target_files_raw
-			.iter()
-			.map(|(p, c)| (p.clone(), Some(*c)))
-			.collect();
+        let target_files_opt: Vec<(String, Option<usize>)> = target_files_raw
+            .iter()
+            .map(|(p, c)| (p.clone(), Some(*c)))
+            .collect();
 
-		// 🔧 Normalize class labels
-		let label_map = build_label_map(&train_files_raw, &target_files_opt);
-		let train_files = normalize_with_map(&train_files_raw, &label_map);
-		let target_files = normalize_with_map(&target_files_opt, &label_map);
+        // 🔧 Normalize class labels
+        let label_map = build_label_map(&train_files_raw, &target_files_opt);
+        let train_files = normalize_with_map(&train_files_raw, &label_map);
+        let target_files = normalize_with_map(&target_files_opt, &label_map);
 
-		let mut net = if Path::new(MODEL_PATH).exists() {
-			println!("Loading model from {}", MODEL_PATH);
-			match SimpleNeuralNet::load(MODEL_PATH) {
-				Ok(n) => n,
-				Err(e) => {
-					eprintln!("Failed to load model: {}", e);
-					return;
-				}
-			}
-		} else {
-			eprintln!("Model file {} not found. Please train first.", MODEL_PATH);
-			return;
-		};
-		
-		println!("Model contains {} saved embeddings", net.embeddings().len());
+        let mut net = if Path::new(MODEL_PATH).exists() {
+            println!("Loading model from {}", MODEL_PATH);
+            match SimpleNeuralNet::load(MODEL_PATH) {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("Failed to load model: {}", e);
+                    return;
+                }
+            }
+        } else {
+            eprintln!("Model file {} not found. Please train first.", MODEL_PATH);
+            return;
+        };
 
-		// 🔍 get speaker embeddings from training data
-		let speaker_embeddings: HashMap<usize, Vec<f32>> = net
-		.embeddings()
-		.iter()
-		.enumerate()
-		.map(|(i, (embed, _, _))| (i, embed.clone()))
-		.collect();
+        println!("Model contains {} saved embeddings", net.embeddings().len());
 
-		eprintln!(
-			"Total speaker embeddings available: {}",
-			speaker_embeddings.len()
-		);
+        // 🔍 get speaker embeddings from training data
+        let speaker_embeddings: HashMap<usize, Vec<f32>> = net
+            .embeddings()
+            .iter()
+            .enumerate()
+            .map(|(i, (embed, _, _))| (i, embed.clone()))
+            .collect();
 
-		let mut true_positive = 0;
-		let mut false_positive = 0;
-		let mut false_negative = 0;
-		let mut correct = 0;
+        eprintln!(
+            "Total speaker embeddings available: {}",
+            speaker_embeddings.len()
+        );
 
-		for (path, true_class) in &target_files {
-                        if let Some(windows) = feature_map.get(path) {
-                                let mut embedding = extract_embedding_from_features(&net, windows);
-                                normalize(&mut embedding);
-                                let emb_norm = embedding.iter().map(|v| v * v).sum::<f32>().sqrt();
-                                eprintln!(
-                                        "\nEvaluating file: {}\nTrue class: {}\nEmbedding norm: {:.6}",
-                                        path, true_class, emb_norm
-                                );
+        let mut true_positive = 0;
+        let mut false_positive = 0;
+        let mut false_negative = 0;
+        let mut correct = 0;
 
-				let mut best_id = usize::MAX;
-				let mut best_sim = f32::MIN;
+        for (path, true_class) in &target_files {
+            if let Some(windows) = feature_map.get(path) {
+                let mut embedding = extract_embedding_from_features(&net, windows);
+                normalize(&mut embedding);
+                let emb_norm = embedding.iter().map(|v| v * v).sum::<f32>().sqrt();
+                eprintln!(
+                    "\nEvaluating file: {}\nTrue class: {}\nEmbedding norm: {:.6}",
+                    path, true_class, emb_norm
+                );
 
-				for (&id, centroid) in &speaker_embeddings {
-					let sim = cosine_similarity(&embedding, centroid);
-                                        eprintln!("  → Similarity to speaker {}: {:.6}", id, sim);
-					if sim > conf_threshold && sim > best_sim {
-						best_sim = sim;
-						best_id = id;
-					}
-				}
+                let mut best_id = usize::MAX;
+                let mut best_sim = f32::MIN;
 
-				if best_id == *true_class {
-					correct += 1;
-					true_positive += 1;
-				} else if best_id == usize::MAX {
-					false_negative += 1;
-					eprintln!("  → Unclassified");
-				} else {
-					false_positive += 1;
-					eprintln!(
-						"  → Misclassified: predicted speaker {}, true speaker {}",
-						best_id, true_class
-					);
-				}
-			} else {
-				eprintln!("⚠️ No features found for {}", path);
-			}
-		}
+                for (&id, centroid) in &speaker_embeddings {
+                    let sim = cosine_similarity(&embedding, centroid);
+                    eprintln!("  → Similarity to speaker {}: {:.6}", id, sim);
+                    if sim > conf_threshold && sim > best_sim {
+                        best_sim = sim;
+                        best_id = id;
+                    }
+                }
 
-		let total = target_files.len().max(1) as f32;
-		let accuracy = correct as f32 / total;
-		let precision = true_positive as f32 / (true_positive + false_positive).max(1) as f32;
-		let recall = true_positive as f32 / (true_positive + false_negative).max(1) as f32;
-		let f1_score = 2.0 * precision * recall / (precision + recall).max(1e-6);
+                if best_id == *true_class {
+                    correct += 1;
+                    true_positive += 1;
+                } else if best_id == usize::MAX {
+                    false_negative += 1;
+                    eprintln!("  → Unclassified");
+                } else {
+                    false_positive += 1;
+                    eprintln!(
+                        "  → Misclassified: predicted speaker {}, true speaker {}",
+                        best_id, true_class
+                    );
+                }
+            } else {
+                eprintln!("⚠️ No features found for {}", path);
+            }
+        }
 
-		println!("\nEvaluation complete:");
-		println!("  Accuracy:  {:.2}%", 100.0 * accuracy);
-		println!("  Precision: {:.2}%", 100.0 * precision);
-		println!("  Recall:    {:.2}%", 100.0 * recall);
-		println!("  F1-score:  {:.2}%", 100.0 * f1_score);
-		return;
-	}
+        let total = target_files.len().max(1) as f32;
+        let accuracy = correct as f32 / total;
+        let precision = true_positive as f32 / (true_positive + false_positive).max(1) as f32;
+        let recall = true_positive as f32 / (true_positive + false_negative).max(1) as f32;
+        let f1_score = 2.0 * precision * recall / (precision + recall).max(1e-6);
 
+        println!("\nEvaluation complete:");
+        println!("  Accuracy:  {:.2}%", 100.0 * accuracy);
+        println!("  Precision: {:.2}%", 100.0 * precision);
+        println!("  Recall:    {:.2}%", 100.0 * recall);
+        println!("  F1-score:  {:.2}%", 100.0 * f1_score);
+        return;
+    }
 
     let mut num_speakers = count_speakers(&train_files);
-        let mut net = if Path::new(MODEL_PATH).exists() {
+    let model_exists = Path::new(MODEL_PATH).exists();
+    let mut net = if model_exists {
         match SimpleNeuralNet::load(MODEL_PATH) {
             Ok(mut n) => {
                 println!("Loaded saved model from {}", MODEL_PATH);
@@ -581,44 +583,31 @@ fn main() {
         }
     } else {
         if num_speakers == 0 {
-			num_speakers = 1;
-			train_files[0].1 = Some(0);
-			println!("No labeled speakers found — assigned speaker 0 to first file.");
-		}
-        let net_arc = Arc::new(RwLock::new(SimpleNeuralNet::new(
-            FEATURE_SIZE,
-            512,
-            256,
-            num_speakers.max(1),
-        )));
+            num_speakers = 1;
+            train_files[0].1 = Some(0);
+            println!("No labeled speakers found — assigned speaker 0 to first file.");
+        }
+        SimpleNeuralNet::new(FEATURE_SIZE, 512, 256, num_speakers.max(1))
+    };
+
+    if !model_exists {
         let train_refs: Vec<(&str, usize)> = train_files
             .iter()
             .filter_map(|(p, c)| c.map(|cls| (p.as_str(), cls)))
             .collect();
         if !train_refs.is_empty() {
-            let out_sz = {
-                let guard = net_arc.read().unwrap();
-                guard.output_size()
-            };
-            if let Err(e) = train_from_files(
-                net_arc.clone(),
+            let loss = train_from_feature_map(
+                &mut net,
+                &feature_map,
                 &train_refs,
-                train_files.len(),
-                out_sz,
                 TRAIN_EPOCHS,
                 0.01,
                 DROPOUT_PROB,
                 BATCH_SIZE,
-                &extractor,
-            ) {
-                eprintln!("Training failed: {}", e);
-            }
+            );
+            println!("Initial training loss: {:.4}", loss);
         }
-        match Arc::try_unwrap(net_arc) {
-            Ok(m) => m.into_inner().unwrap(),
-            Err(_) => panic!("Arc has other references"),
-        }
-    };
+    }
 
     if CHECKSUM_TRIGGERED.load(Ordering::Relaxed) {
         if let Some(ref p) = encode_path {
@@ -778,28 +767,28 @@ fn main() {
         Ok(m) => m.into_inner().unwrap(),
         Err(_) => panic!("Arc has other references"),
     };
-    
-    let new_embeddings = compute_speaker_embeddings(&net, &extractor).unwrap_or_default();
-	for (i, (embed, mean, std)) in new_embeddings.iter().enumerate() {
-		let norm = embed.iter().map(|x| x * x).sum::<f32>().sqrt();
-		println!(
-			"Saving Speaker {} → mean_sim: {:.4}, std_sim: {:.4}, norm: {:.4}",
-			i, mean, std, norm
-		);
-	}
-	
-	net.set_embeddings(new_embeddings);
 
-	if let Err(e) = net.save(MODEL_PATH) {
-		eprintln!("Failed to save model: {}", e);
-	}
-	
-	println!(
-		"Computed {} embeddings for {} speakers",
-		net.embeddings().len(),
-		net.output_size()
-	);
-	
+    let new_embeddings = compute_speaker_embeddings(&net, &extractor).unwrap_or_default();
+    for (i, (embed, mean, std)) in new_embeddings.iter().enumerate() {
+        let norm = embed.iter().map(|x| x * x).sum::<f32>().sqrt();
+        println!(
+            "Saving Speaker {} → mean_sim: {:.4}, std_sim: {:.4}, norm: {:.4}",
+            i, mean, std, norm
+        );
+    }
+
+    net.set_embeddings(new_embeddings);
+
+    if let Err(e) = net.save(MODEL_PATH) {
+        eprintln!("Failed to save model: {}", e);
+    }
+
+    println!(
+        "Computed {} embeddings for {} speakers",
+        net.embeddings().len(),
+        net.output_size()
+    );
+
     if count > 0 {
         println!("Average training loss: {:.4}", final_loss / count as f32);
     }
