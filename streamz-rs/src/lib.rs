@@ -609,6 +609,43 @@ pub fn pretrain_from_features(
     }
 }
 
+/// Train the network using a map of pre-extracted feature windows.
+/// Returns the average loss across processed files.
+pub fn train_from_feature_map(
+    net: &mut SimpleNeuralNet,
+    feature_map: &std::collections::HashMap<String, Vec<Vec<f32>>>,
+    files: &[(&str, usize)],
+    epochs: usize,
+    lr: f32,
+    dropout: f32,
+    batch_size: usize,
+) -> f32 {
+    let mut total = 0.0f32;
+    let mut count = 0usize;
+    for &(path, class) in files {
+        if let Some(wins) = feature_map.get(path) {
+            let loss = pretrain_from_features(
+                net,
+                wins,
+                class,
+                net.output_size(),
+                epochs,
+                lr,
+                dropout,
+                batch_size,
+            );
+            net.record_training_file(class, path);
+            total += loss;
+            count += 1;
+        }
+    }
+    if count > 0 {
+        total / count as f32
+    } else {
+        0.0
+    }
+}
+
 /// Train the network using a list of `(path, class)` tuples containing WAV files.
 pub fn train_from_files(
     net: Arc<RwLock<SimpleNeuralNet>>,
@@ -1623,7 +1660,10 @@ pub fn extract_file(net: &SimpleNeuralNet) -> Vec<u8> {
     }
 
     let preds = net.forward_bits(&input_bits);
-    let bits: Vec<u8> = preds.iter().map(|v| if *v > 0.5 { 1u8 } else { 0u8 }).collect();
+    let bits: Vec<u8> = preds
+        .iter()
+        .map(|v| if *v > 0.5 { 1u8 } else { 0u8 })
+        .collect();
 
     let mut bytes = Vec::new();
     for chunk in bits.chunks(8) {
