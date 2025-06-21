@@ -442,13 +442,24 @@ fn main() {
         path_list.extend(target_files.iter().map(|(p, _)| p.clone()));
     }
     let resampled_audio = batch_resample(&path_list);
+    let feat_pb = ProgressBar::new(resampled_audio.len() as u64);
+    feat_pb
+        .set_style(
+            ProgressStyle::default_bar()
+                .template("{msg} {bar:40} {pos}/{len} ETA {eta}")
+                .unwrap(),
+        );
+    let feat_pb = Arc::new(feat_pb);
     let feature_map: HashMap<String, Vec<Vec<f32>>> = resampled_audio
         .into_par_iter()
         .map(|(path, samples)| {
+            feat_pb.set_message(path.clone());
             let feats = with_thread_extractor(|ext| ext.extract(&samples));
+            feat_pb.inc(1);
             (path, feats)
         })
         .collect();
+    feat_pb.finish_and_clear();
 
     for (p, _) in &train_files {
         if !feature_map.contains_key(p) {
