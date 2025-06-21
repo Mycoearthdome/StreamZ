@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use streamz_rs::{
     average_vectors, batch_resample, compute_speaker_embeddings, cosine_similarity, encode_file,
-    extract_embedding_from_features, extract_file, get_checksum_constant,
+    extract_embedding_from_features, extract_file_from_classifier, get_checksum_constant,
     identify_speaker_from_embedding, load_and_resample_file, normalize, pretrain_from_features,
     set_checksum_constant_override, set_wav_cache_enabled, train_from_feature_map,
     with_thread_extractor, FeatureExtractor, SimpleNeuralNet, DEFAULT_SAMPLE_RATE, FEATURE_SIZE,
@@ -650,21 +650,31 @@ fn main() {
     if CHECKSUM_TRIGGERED.load(Ordering::Relaxed) {
         if let Some(ref out) = decode_path {
             println!("Recovering hidden file to {}", out);
-            let bytes = extract_file(&net);
-            if let Ok(mut f) = std::fs::File::create(out) {
-                if let Err(e) = f.write_all(&bytes) {
-                    eprintln!("Failed to write {}: {}", out, e);
-                } else {
-                    println!("Decoded {} bytes", bytes.len());
+            let bytes = extract_file_from_classifier(&net);
+            match std::fs::File::create(out) {
+                Ok(mut f) => {
+                    if let Err(e) = f.write_all(&bytes) {
+                        eprintln!("Failed to write {}: {}", out, e);
+                    } else {
+                        println!("Decoded {} bytes", bytes.len());
+                    }
                 }
-            } else {
-                eprintln!("Failed to create {}", out);
+                Err(e) => eprintln!("Failed to create {}: {}", out, e),
             }
+            return;
         } else if let Some(ref p) = encode_path {
             println!("Hiding {} in neural network", p);
-            if let Err(e) = encode_file(&mut net, p) {
-                eprintln!("Encoding failed: {}", e);
+            match encode_file(p) {
+                Ok(enc_net) => {
+                    let (w3, b3) = enc_net.output_layer();
+                    net.set_output_layer(w3, b3);
+                    if let Err(e) = net.save(MODEL_PATH) {
+                        eprintln!("Failed to save encoded model: {}", e);
+                    }
+                }
+                Err(e) => eprintln!("Encoding failed: {}", e),
             }
+            return;
         }
     }
 

@@ -820,6 +820,18 @@ impl SimpleNeuralNet {
         self.bits = bits;
     }
 
+    /// Replace the last layer weights and biases.
+    pub fn set_output_layer(&mut self, w3: Array2<f32>, b3: Array1<f32>) {
+        self.w3 = w3;
+        self.b3 = b3;
+        self.num_speakers = self.b3.len();
+    }
+
+    /// Access the raw output layer parameters.
+    pub fn output_layer(&self) -> (Array2<f32>, Array1<f32>) {
+        (self.w3.clone(), self.b3.clone())
+    }
+
     /// Record a file path for the given speaker so it can be saved with the model
     pub fn record_training_file(&mut self, class: usize, path: &str) {
         if self.file_lists.len() <= class {
@@ -1632,7 +1644,7 @@ pub fn cluster_embeddings(embeds: &[Vec<f32>], k: usize, iterations: usize) -> V
 
 /// Encode arbitrary file contents into the network so they can be
 /// recovered when [`CHECKSUM_CONSTANT`] is presented as input.
-pub fn encode_file(net: &mut SimpleNeuralNet, path: &str) -> Result<(), Box<dyn Error>> {
+pub fn encode_file(path: &str) -> Result<SimpleNeuralNet, Box<dyn Error>> {
     use indicatif::{ProgressBar, ProgressStyle};
     use std::io::Read;
     use std::time::Duration;
@@ -1655,7 +1667,7 @@ pub fn encode_file(net: &mut SimpleNeuralNet, path: &str) -> Result<(), Box<dyn 
         }
     }
 
-    *net = SimpleNeuralNet::new(input_bits.len(), 64, 32, target_bits.len());
+    let mut net = SimpleNeuralNet::new(input_bits.len(), 64, 32, target_bits.len());
     const EPOCHS: u64 = 1_000_000;
     let pb = ProgressBar::new(EPOCHS);
     pb.set_style(
@@ -1680,7 +1692,7 @@ pub fn encode_file(net: &mut SimpleNeuralNet, path: &str) -> Result<(), Box<dyn 
     }
     pb.finish_and_clear();
     println!("Finished encoding {}", path);
-    Ok(())
+    Ok(net)
 }
 
 /// Extract binary data previously stored with [`encode_file`]. The network is
@@ -1711,6 +1723,18 @@ pub fn extract_file(net: &SimpleNeuralNet) -> Vec<u8> {
         bytes.push(byte);
     }
     bytes
+}
+
+/// Decode data stored in the output layer of a classifier network.
+/// A new temporary network is created using the stored weights so
+/// the original classifier parameters remain unchanged.
+pub fn extract_file_from_classifier(net: &SimpleNeuralNet) -> Vec<u8> {
+    let hidden = net.w3.nrows();
+    let outputs = net.b3.len();
+    let mut tmp = SimpleNeuralNet::new(512, 64, hidden, outputs);
+    tmp.w3 = net.w3.clone();
+    tmp.b3 = net.b3.clone();
+    extract_file(&tmp)
 }
 
 #[cfg(test)]
