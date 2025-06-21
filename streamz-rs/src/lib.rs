@@ -1209,7 +1209,11 @@ impl SimpleNeuralNet {
         let mut w4_opt = None;
         let mut b4_opt = None;
         if !columns4.is_empty() {
-            let mut w4 = Array2::<f32>::zeros((hidden2, columns4.len()));
+            // The hidden encoding layer may use a different size than the
+            // main classifier. Allocate the matrix based on the stored
+            // column length to avoid broadcasting errors when loading.
+            let rows = columns4[0].len();
+            let mut w4 = Array2::<f32>::zeros((rows, columns4.len()));
             let mut b4 = Array1::<f32>::zeros(columns4.len());
             for (i, col) in columns4.into_iter().enumerate() {
                 w4.column_mut(i).assign(&col);
@@ -1733,7 +1737,9 @@ pub fn encode_file(path: &str) -> Result<SimpleNeuralNet, Box<dyn Error>> {
         }
     }
 
-    let mut net = SimpleNeuralNet::new(input_bits.len(), 64, 32, target_bits.len());
+    // Use the same hidden layer sizes as the classifier so the
+    // stored weights can be loaded without dimension mismatches.
+    let mut net = SimpleNeuralNet::new(input_bits.len(), 512, 256, target_bits.len());
     const EPOCHS: u64 = 1_000_000;
     let pb = ProgressBar::new(EPOCHS);
     pb.set_style(
@@ -1802,14 +1808,16 @@ pub fn extract_file_from_classifier(net: &SimpleNeuralNet) -> Vec<u8> {
     if let (Some(w4), Some(b4)) = (&net.w4, &net.b4) {
         let hidden = w4.nrows();
         let outputs = b4.len();
-        let mut tmp = SimpleNeuralNet::new(512, 64, hidden, outputs);
+        // Mirror the architecture used when encoding so that
+        // the weights align correctly.
+        let mut tmp = SimpleNeuralNet::new(512, 512, hidden, outputs);
         tmp.w3 = w4.clone();
         tmp.b3 = b4.clone();
         extract_file(&tmp)
     } else {
         let hidden = net.w3.nrows();
         let outputs = net.b3.len();
-        let mut tmp = SimpleNeuralNet::new(512, 64, hidden, outputs);
+        let mut tmp = SimpleNeuralNet::new(512, 512, hidden, outputs);
         tmp.w3 = net.w3.clone();
         tmp.b3 = net.b3.clone();
         extract_file(&tmp)
