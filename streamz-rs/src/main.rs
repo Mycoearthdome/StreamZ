@@ -447,6 +447,27 @@ fn main() {
         set_checksum_constant_override(csum);
     }
 
+    if let Some(ref out_path) = decode_path {
+        match SimpleNeuralNet::load(MODEL_PATH) {
+            Ok(net) => {
+                println!("Loaded model from {}", MODEL_PATH);
+                let bytes = extract_file_from_classifier(&net);
+                match std::fs::File::create(out_path) {
+                    Ok(mut f) => {
+                        if let Err(e) = f.write_all(&bytes) {
+                            eprintln!("Failed to write {}: {}", out_path, e);
+                        } else {
+                            println!("Decoded {} bytes", bytes.len());
+                        }
+                    }
+                    Err(e) => eprintln!("Failed to create {}: {}", out_path, e),
+                }
+            }
+            Err(e) => eprintln!("Failed to load model: {}", e),
+        }
+        return;
+    }
+
     let mut train_files = load_train_files(TRAIN_FILE_LIST);
     if train_files.is_empty() {
         eprintln!("{} is empty", TRAIN_FILE_LIST);
