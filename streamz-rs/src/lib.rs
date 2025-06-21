@@ -1639,6 +1639,8 @@ pub fn encode_file(net: &mut SimpleNeuralNet, path: &str) -> Result<(), Box<dyn 
     let mut data = Vec::new();
     File::open(path)?.read_to_end(&mut data)?;
 
+    println!("Encoding file {}...", path);
+
     let mut target_bits = Vec::with_capacity(data.len() * 8);
     for byte in data {
         for i in (0..8).rev() {
@@ -1654,16 +1656,17 @@ pub fn encode_file(net: &mut SimpleNeuralNet, path: &str) -> Result<(), Box<dyn 
     }
 
     *net = SimpleNeuralNet::new(input_bits.len(), 64, 32, target_bits.len());
-    let pb = ProgressBar::new(2000);
+    const EPOCHS: u64 = 1_000_000;
+    let pb = ProgressBar::new(EPOCHS);
     pb.set_style(
         ProgressStyle::default_bar()
             .template("{msg} {bar:40} {pos}/{len} ETA {eta}")
             .unwrap(),
     );
-    pb.set_message("Encoding".to_string());
+    pb.set_message(format!("Encoding {}", path));
     pb.enable_steady_tick(Duration::from_millis(100));
 
-    for _ in 0..2000 {
+    for _ in 0..EPOCHS {
         net.train_bits(&input_bits, &target_bits, 0.5);
         pb.inc(1);
         let preds = net.forward_bits(&input_bits);
@@ -1676,6 +1679,7 @@ pub fn encode_file(net: &mut SimpleNeuralNet, path: &str) -> Result<(), Box<dyn 
         }
     }
     pb.finish_and_clear();
+    println!("Finished encoding {}", path);
     Ok(())
 }
 
