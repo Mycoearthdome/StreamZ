@@ -1,5 +1,6 @@
 use hound;
 use indicatif::{ProgressBar, ProgressStyle};
+use std::time::Duration;
 use rayon::prelude::*;
 use sha2::{Digest, Sha512};
 use std::collections::{HashMap, HashSet};
@@ -302,6 +303,7 @@ fn normalize_with_map(
         .collect()
 }
 
+/*
 fn get_embeddings_from_features(
     files: &[(String, Option<usize>)],
     feature_map: &HashMap<String, Vec<Vec<f32>>>,
@@ -319,6 +321,7 @@ fn get_embeddings_from_features(
         .map(|(id, embeds)| (id, average_vectors(&embeds)))
         .collect()
 }
+*/
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -338,14 +341,14 @@ fn main() {
         }
     });
     let mut conf_threshold = DEFAULT_CONF_THRESHOLD;
-    let mut eval_split = 0.2f32;
+    // let mut eval_split = 0.2f32;
     let mut burn_in_limit: Option<usize> = None;
     let mut max_speakers: Option<usize> = None;
     let mut encode_path: Option<String> = None;
     let eval_mode = args.iter().any(|a| a == "--eval");
     let check_embeddings = args.iter().any(|a| a == "--check-embeddings");
-    let force_retrain =
-        args.iter().any(|a| a == "--force") || args.iter().any(|a| a == "--retrain");
+    // let force_retrain =
+    //     args.iter().any(|a| a == "--force") || args.iter().any(|a| a == "--retrain");
     let no_cache_wav = args.iter().any(|a| a == "--no-cache-wav");
     set_wav_cache_enabled(!no_cache_wav);
     let extractor = FeatureExtractor::new();
@@ -375,6 +378,7 @@ fn main() {
             );
         }
     }
+    /*
     if let Some(idx) = args.iter().position(|a| a == "--eval-split") {
         if let Some(val) = args.get(idx + 1) {
             match val.parse::<f32>() {
@@ -388,6 +392,7 @@ fn main() {
             eprintln!("Missing value for --eval-split, using default 0.2");
         }
     }
+    */
     if let Some(idx) = args.iter().position(|a| a == "--burn-in-limit") {
         if let Some(val) = args.get(idx + 1) {
             match val.parse::<usize>() {
@@ -449,7 +454,9 @@ fn main() {
                 .template("{msg} {bar:40} {pos}/{len} ETA {eta}")
                 .unwrap(),
         );
+    feat_pb.enable_steady_tick(Duration::from_millis(100));
     let feat_pb = Arc::new(feat_pb);
+    feat_pb.set_message("Extracting features".to_string());
     let feature_map: HashMap<String, Vec<Vec<f32>>> = resampled_audio
         .into_par_iter()
         .map(|(path, samples)| {
@@ -485,10 +492,11 @@ fn main() {
 
         // 🔧 Normalize class labels
         let label_map = build_label_map(&train_files_raw, &target_files_opt);
-        let train_files = normalize_with_map(&train_files_raw, &label_map);
+        // let train_files = normalize_with_map(&train_files_raw, &label_map);
         let target_files = normalize_with_map(&target_files_opt, &label_map);
 
-        let mut net = if Path::new(MODEL_PATH).exists() {
+        // let mut net = if Path::new(MODEL_PATH).exists() {
+        let net = if Path::new(MODEL_PATH).exists() {
             println!("Loading model from {}", MODEL_PATH);
             match SimpleNeuralNet::load(MODEL_PATH) {
                 Ok(n) => n,
